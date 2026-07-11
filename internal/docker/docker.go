@@ -12,12 +12,21 @@ import (
 	"github.com/docker/docker/client"
 )
 
+type Container struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Image  string `json:"image"`
+	Status string `json:"status"`
+	State  string `json:"state"`
+}
+
 type DockerStats struct {
-	Containers int
-	Images     int
-	Networks   int
-	Volumes    int
-	Status     string
+	Containers     int         `json:"containers"`
+	Images         int         `json:"images"`
+	Networks       int         `json:"networks"`
+	Volumes        int         `json:"volumes"`
+	Status         string      `json:"status"`
+	ContainersList []Container `json:"containers_list"`
 }
 
 // GetDockerStats fetches the current metrics from the Docker daemon
@@ -49,6 +58,19 @@ func GetDockerStats() DockerStats {
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err == nil {
 		stats.Containers = len(containers)
+		for _, c := range containers {
+			name := "Unknown"
+			if len(c.Names) > 0 {
+				name = c.Names[0]
+			}
+			stats.ContainersList = append(stats.ContainersList, Container{
+				ID:     c.ID[:12],
+				Name:   name,
+				Image:  c.Image,
+				Status: c.Status,
+				State:  c.State,
+			})
+		}
 	} else {
 		stats.Status = fmt.Sprintf("Error reading containers: %v", err)
 	}

@@ -24,6 +24,7 @@ import (
 
 	"main/internal/agent"
 	sshlib "main/internal/ssh"
+	"main/internal/theme"
 )
 
 type Router struct {
@@ -116,11 +117,6 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					logsOut := r.sshClient.RunCommand("journalctl -n 25 --no-pager")
 					payload.Logs = logsOut
 				}
-				// Fetch remote files only if the Files tab is active
-				if r.cursor == 4 {
-					filesOut := r.sshClient.RunCommand("ls -lah --color=never /")
-					payload.Files = filesOut
-				}
 
 				return payload
 			})
@@ -131,6 +127,22 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			c := exec.Command("ssh", r.activeUser+"@"+r.activeHost)
 			return r, tea.ExecProcess(c, func(err error) tea.Msg {
 				return nil
+			})
+		}
+
+	case pages.RunRemoteCmdMsg:
+		if r.sshClient != nil {
+			cmds = append(cmds, func() tea.Msg {
+				r.sshClient.Run(msg.Command)
+				return nil // executed silently in bg
+			})
+		}
+
+	case pages.RunRemoteQueryMsg:
+		if r.sshClient != nil {
+			cmds = append(cmds, func() tea.Msg {
+				out := r.sshClient.RunCommand(msg.Command)
+				return msg.ResponseHandler(out)
 			})
 		}
 
@@ -202,9 +214,13 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Router) View() string {
-	accentColor := lipgloss.Color("205")
-	primaryColor := lipgloss.Color("86")
-	dimColor := lipgloss.Color("240")
+	if r.sshClient == nil && r.cursor != 0 {
+		return "Please select a server first..."
+	}
+
+	accentColor := theme.Current.Accent
+	primaryColor := theme.Current.Primary
+	dimColor := theme.Current.Dim
 
 	sidebarStyle := lipgloss.NewStyle().
 		Width(24).
