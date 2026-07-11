@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./assets/logo.jpg" width="150" alt="Vortex Logo">
+  <img src="./assets/logo.png" width="150" alt="Vortex Logo">
   <h1>🌌 VORTEX</h1>
   <p><strong>The Ultimate Terminal User Interface (TUI) for Remote Server Management.</strong></p>
 
