@@ -7,14 +7,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/agent"
+	"main/internal/components"
 	docklib "main/internal/docker"
-	"main/internal/pages"
+	dockerengine "main/internal/engine/docker"
 	"main/internal/theme"
+	sshlib "main/internal/ssh"
 )
 
 type Model struct {
 	dockerStats docklib.DockerStats
 	cursor      int
+	engine      *dockerengine.Engine
 }
 
 func New() Model {
@@ -39,16 +42,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case "r", "R":
-			if len(m.dockerStats.ContainersList) > 0 {
+			if len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
 				c := m.dockerStats.ContainersList[m.cursor]
-				return m, func() tea.Msg { return pages.RunRemoteCmdMsg{Command: "docker restart " + c.ID} }
+				return m, func() tea.Msg {
+					m.engine.RestartContainer(c.ID)
+					return nil
+				}
 			}
 		case "s", "S":
-			if len(m.dockerStats.ContainersList) > 0 {
+			if len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
 				c := m.dockerStats.ContainersList[m.cursor]
-				return m, func() tea.Msg { return pages.RunRemoteCmdMsg{Command: "docker stop " + c.ID} }
+				return m, func() tea.Msg {
+					m.engine.StopContainer(c.ID)
+					return nil
+				}
 			}
 		}
+
+	case sshlib.ConnectedMsg:
+		m.engine = dockerengine.NewEngine(msg.Client)
+		return m, nil
 
 	case docklib.DockerStats:
 		m.dockerStats = msg
@@ -61,17 +74,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current.Dim).
-		Padding(1, 3).
-		Margin(1, 0)
-
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Current.Accent).
-		MarginBottom(1)
-
 	header := fmt.Sprintf("Status: %s | Containers: %d | Images: %d | Volumes: %d",
 		m.dockerStats.Status,
 		m.dockerStats.Containers,
@@ -104,14 +106,14 @@ func (m Model) View() string {
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [R] Restart Container  [S] Stop Container")
 
-	return card.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			titleCard.Render("DOCKER ENGINE"),
-			header,
-			"\n"+list,
-			controls,
-		),
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		components.Title("DOCKER ENGINE"),
+		header,
+		"\n"+list,
+		controls,
 	)
+
+	return components.Card(content, 80)
 }
 
 func (m Model) Title() string { return "Docker" }

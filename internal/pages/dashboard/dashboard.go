@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/agent"
+	"main/internal/components"
 	"main/internal/stats"
 	"main/internal/theme"
 )
@@ -54,59 +55,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func colorizeBar(percent float64) string {
-	totalBlocks := 30
-	filledBlocks := int((percent / 100.0) * float64(totalBlocks))
-	if filledBlocks < 0 { filledBlocks = 0 }
-	if filledBlocks > totalBlocks { filledBlocks = totalBlocks }
-	
-	filled := strings.Repeat("█", filledBlocks)
-	empty := strings.Repeat("░", totalBlocks-filledBlocks)
-
-	var color lipgloss.Color
-	if percent < 50 {
-		color = lipgloss.Color("46") // Green
-	} else if percent < 80 {
-		color = lipgloss.Color("226") // Yellow
-	} else {
-		color = lipgloss.Color("196") // Red
-	}
-
-	return lipgloss.NewStyle().Foreground(color).Render(filled) + 
-	       lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(empty) +
-	       lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf(" %3d%%", int(percent)))
-}
-
 func (m Model) View() string {
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current.Dim).
-		Padding(1, 3).
-		Margin(1, 0).
-		Width(60)
-
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Current.Accent).
-		MarginBottom(1)
-
 	labelStyle := lipgloss.NewStyle().Foreground(theme.Current.Text).Width(8)
 
-	return card.Render(
-		strings.Join([]string{
-			titleCard.Render("HARDWARE UTILIZATION"),
-			"",
-			labelStyle.Render("CPU") + " " + colorizeBar(m.sysStats.CPUPercent),
-			labelStyle.Render("RAM") + " " + colorizeBar(m.sysStats.RAMPercent),
-			labelStyle.Render("Disk") + " " + colorizeBar(m.sysStats.DiskPercent),
-			"",
-			titleCard.Render("SYSTEM INFORMATION"),
-			"",
-			fmt.Sprintf("%s %s", labelStyle.Render("Uptime"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Uptime)),
-			fmt.Sprintf("%s %s", labelStyle.Render("OS"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.OS)),
-			fmt.Sprintf("%s %s", labelStyle.Render("Kernel"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Kernel)),
-		}, "\n"),
-	)
+	content := strings.Join([]string{
+		components.Title("HARDWARE UTILIZATION"),
+		"",
+		labelStyle.Render("CPU") + " " + components.ProgressBar(m.sysStats.CPUPercent, 30),
+		labelStyle.Render("RAM") + " " + components.ProgressBar(m.sysStats.RAMPercent, 30),
+		labelStyle.Render("Disk") + " " + components.ProgressBar(m.sysStats.DiskPercent, 30),
+		"",
+		components.Title("SYSTEM INFORMATION"),
+		"",
+		fmt.Sprintf("%s %s", labelStyle.Render("Uptime"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Uptime)),
+		fmt.Sprintf("%s %s", labelStyle.Render("OS"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.OS)),
+		fmt.Sprintf("%s %s", labelStyle.Render("Kernel"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Kernel)),
+	}, "\n")
+
+	return components.Card(content, 60)
 }
 
 func (m Model) Title() string {

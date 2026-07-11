@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"main/internal/components"
 	"main/internal/config"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
@@ -201,21 +202,9 @@ func (m Model) View() string {
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim
 
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(dimColor).
-		Padding(1, 3).
-		Margin(1, 0).
-		Width(60)
-
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(accentColor).
-		MarginBottom(1)
-
 	if m.currentMode == modeForm {
 		var b strings.Builder
-		b.WriteString(titleCard.Render("ADD NEW SERVER") + "\n\n")
+		b.WriteString(components.Title("ADD NEW SERVER") + "\n\n")
 
 		for i := range m.inputs {
 			b.WriteString(m.inputs[i].View())
@@ -233,11 +222,11 @@ func (m Model) View() string {
 		
 		b.WriteString("\n\n" + button + "\n\n")
 		b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("Press ESC to cancel."))
-		return card.Render(b.String())
+		return components.Card(b.String(), 60)
 	}
 
 	var items string
-	items += titleCard.Render("REGISTERED SERVERS") + "\n\n"
+	items += components.Title("REGISTERED SERVERS") + "\n\n"
 
 	for i, s := range m.servers {
 		cursor := "  "
@@ -262,7 +251,7 @@ func (m Model) View() string {
 	
 	items += "\n" + lipgloss.NewStyle().Foreground(accentColor).Render(m.status)
 
-	return card.Render(items)
+	return components.Card(items, 60)
 }
 
 func (m Model) Title() string { return "Servers" }

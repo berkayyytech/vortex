@@ -1,6 +1,9 @@
 package pages
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	sshlib "main/internal/ssh"
+)
 
 // Page is the core interface that every module in Vortex must implement.
 // By embedding tea.Model, every page manages its own state and event loop.
@@ -20,4 +23,23 @@ type RunRemoteCmdMsg struct {
 type RunRemoteQueryMsg struct {
 	Command         string
 	ResponseHandler func(string) tea.Msg
+}
+
+// EngineReadyMsg is broadcasted to all pages when a server connects,
+// allowing them to initialize their respective service engines (Docker, Systemd, etc.)
+type EngineReadyMsg struct {
+	Client *sshlib.Client
+}
+
+// Registry holds all registered pages for the application.
+var registry []Page
+
+// Register allows dynamic pages (like modules/plugins) to add themselves to the UI.
+func Register(p Page) {
+	registry = append(registry, p)
+}
+
+// GetAll returns all registered pages.
+func GetAll() []Page {
+	return registry
 }

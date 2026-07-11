@@ -28,9 +28,10 @@ import (
 )
 
 type Router struct {
-	pages      []pages.Page
-	cursor     int
-	sshClient  *sshlib.Client
+	pages       []pages.Page
+	sidebarIdx  int
+	activeIdx   int
+	sshClient   *sshlib.Client
 	activeHost string
 	activeUser string
 	activePort string
@@ -56,7 +57,8 @@ func initialModel() Router {
 			terminal.New(),
 			settings.New(),
 		},
-		cursor: 0,
+		sidebarIdx: 0,
+		activeIdx:  0,
 		paletteItems: []string{
 			"Restart Docker Engine",
 			"Restart Nginx",
@@ -86,7 +88,8 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.activeHost = msg.Host
 		r.activeUser = msg.User
 		r.activePort = msg.Port
-		r.cursor = 1 // Auto-switch to Dashboard
+		r.sidebarIdx = 1 // Auto-switch to Dashboard
+		r.activeIdx = 1
 
 		// Async agent deployment
 		cmds = append(cmds, func() tea.Msg {
@@ -129,7 +132,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				json.Unmarshal([]byte(out), &payload)
 
 				// Fetch live logs only if the Logs tab is active
-				if r.cursor == 5 {
+				if r.activeIdx == 5 {
 					logsOut := r.sshClient.RunCommand("journalctl -n 25 --no-pager")
 					payload.Logs = logsOut
 				}
@@ -192,25 +195,32 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+p":
 			r.paletteActive = true
 			return r, nil
-		case "tab":
-			if r.cursor < len(r.pages)-1 {
-				r.cursor++
+		case "shift+up", "[":
+			if r.sidebarIdx > 0 {
+				r.sidebarIdx--
 			} else {
-				r.cursor = 0
+				r.sidebarIdx = len(r.pages) - 1
 			}
 			return r, nil
-		case "shift+tab":
-			if r.cursor > 0 {
-				r.cursor--
+		case "shift+down", "]":
+			if r.sidebarIdx < len(r.pages)-1 {
+				r.sidebarIdx++
 			} else {
-				r.cursor = len(r.pages)-1
+				r.sidebarIdx = 0
 			}
 			return r, nil
+		case "enter":
+			// If sidebar cursor is different from active page, switch to it!
+			if r.activeIdx != r.sidebarIdx {
+				r.activeIdx = r.sidebarIdx
+				return r, nil
+			}
+			// If they are the same, let the active page handle "enter" (e.g. connecting to a server)
 		}
 
 		// Strictly pass all other KeyMsgs to the active page only
-		updatedModel, cmd := r.pages[r.cursor].Update(msg)
-		r.pages[r.cursor] = updatedModel.(pages.Page)
+		updatedModel, cmd := r.pages[r.activeIdx].Update(msg)
+		r.pages[r.activeIdx] = updatedModel.(pages.Page)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -230,10 +240,6 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Router) View() string {
-	if r.sshClient == nil && r.cursor != 0 {
-		return "Please select a server first..."
-	}
-
 	accentColor := theme.Current.Accent
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim
@@ -274,23 +280,33 @@ func (r Router) View() string {
 	items = append(items, title)
 	items = append(items, "")
 	items = append(items, lipgloss.NewStyle().Foreground(dimColor).Render(" MAIN MENU"))
+	items = append(items, lipgloss.NewStyle().Foreground(dimColor).Render(" [ ] to navigate"))
 	items = append(items, "")
 
 	// Dynamically build the sidebar from the registered pages
 	for i, p := range r.pages {
 		label := fmt.Sprintf("%s  %s", p.Icon(), p.Title())
-		if i == r.cursor {
-			items = append(items, selectedStyle.Render("▌ "+label))
+		
+		var renderedItem string
+		if i == r.sidebarIdx && i == r.activeIdx {
+			renderedItem = selectedStyle.Render("▌ "+label)
+		} else if i == r.sidebarIdx {
+			// Hovering but not active
+			renderedItem = lipgloss.NewStyle().Foreground(theme.Current.Text).Background(lipgloss.Color("238")).Width(22).PaddingLeft(1).Render("  " + label)
+		} else if i == r.activeIdx {
+			// Active but not hovering
+			renderedItem = lipgloss.NewStyle().Foreground(primaryColor).Width(22).PaddingLeft(1).Render("▌ " + label)
 		} else {
-			items = append(items, normalStyle.Render("  "+label))
+			renderedItem = normalStyle.Render("  "+label)
 		}
+		items = append(items, renderedItem)
 	}
 
 	menu := lipgloss.JoinVertical(lipgloss.Left, items...)
 	sidebar := sidebarStyle.Render(menu)
 
 	// Render the active page
-	activePage := r.pages[r.cursor]
+	activePage := r.pages[r.activeIdx]
 	
 	header := lipgloss.NewStyle().
 		Bold(true).
@@ -298,8 +314,15 @@ func (r Router) View() string {
 		Foreground(primaryColor).
 		Render(activePage.Title())
 
+	var pageView string
+	if r.sshClient == nil && r.activeIdx != 0 {
+		pageView = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("❌ Please connect to a server in the 'Servers' tab first.")
+	} else {
+		pageView = activePage.View()
+	}
+
 	content := contentStyle.Render(
-		header + "\n\n" + activePage.View(),
+		header + "\n\n" + pageView,
 	)
 
 	// Combine Sidebar and Content horizontally
