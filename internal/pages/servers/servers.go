@@ -13,6 +13,7 @@ import (
 
 	"main/internal/config"
 	sshlib "main/internal/ssh"
+	"main/internal/theme"
 )
 
 type mode int
@@ -196,15 +197,16 @@ func (m *Model) updateInputs(msg tea.Msg) tea.Cmd {
 }
 
 func (m Model) View() string {
-	accentColor := lipgloss.Color("205")
-	primaryColor := lipgloss.Color("86")
-	dimColor := lipgloss.Color("240")
+	accentColor := theme.Current.Accent
+	primaryColor := theme.Current.Primary
+	dimColor := theme.Current.Dim
 
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(dimColor).
 		Padding(1, 3).
-		Margin(1, 0)
+		Margin(1, 0).
+		Width(60)
 
 	titleCard := lipgloss.NewStyle().
 		Bold(true).
@@ -212,54 +214,55 @@ func (m Model) View() string {
 		MarginBottom(1)
 
 	if m.currentMode == modeForm {
-		var form strings.Builder
-		form.WriteString(titleCard.Render("➕ ADD NEW SERVER") + "\n\n")
+		var b strings.Builder
+		b.WriteString(titleCard.Render("ADD NEW SERVER") + "\n\n")
 
-		labels := []string{"Name:", "Host:", "Port:", "User:", "Auth:"}
 		for i := range m.inputs {
-			form.WriteString(fmt.Sprintf("%-10s %s\n", labels[i], m.inputs[i].View()))
+			b.WriteString(m.inputs[i].View())
+			if i < len(m.inputs)-1 {
+				b.WriteRune('\n')
+			}
 		}
 
-		button := lipgloss.NewStyle().Foreground(dimColor).Render("[ Submit ]")
+		button := "[ Submit ]"
 		if m.focusIndex == len(m.inputs) {
-			button = lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("[ Submit ]")
+			button = lipgloss.NewStyle().Foreground(theme.Current.Bg).Background(primaryColor).Bold(true).Render(button)
+		} else {
+			button = lipgloss.NewStyle().Foreground(dimColor).Render(button)
 		}
-		form.WriteString("\n" + button + "\n\n(Press Esc to cancel)")
-
-		return card.Render(form.String())
+		
+		b.WriteString("\n\n" + button + "\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("Press ESC to cancel."))
+		return card.Render(b.String())
 	}
 
-	// List Mode View
 	var items string
+	items += titleCard.Render("REGISTERED SERVERS") + "\n\n"
+
 	for i, s := range m.servers {
 		cursor := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+		style := lipgloss.NewStyle().Foreground(theme.Current.Text)
+		
 		if m.cursor == i {
 			cursor = "▶ "
 			style = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 		}
-		items += fmt.Sprintf("%s %s\n", cursor, style.Render(s.Name+" ("+s.User+"@"+s.Host+")"))
+
+		items += fmt.Sprintf("%s %s %s\n", cursor, style.Render(s.Name), lipgloss.NewStyle().Foreground(dimColor).Render(s.User+"@"+s.Host))
 	}
 
-	// Add New Server Button
-	addCursor := "  "
-	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	// Add new button
+	cursor := "  "
+	btnStyle := lipgloss.NewStyle().Foreground(dimColor)
 	if m.cursor == len(m.servers) {
-		addCursor = "▶ "
-		addStyle = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
+		cursor = "▶ "
+		btnStyle = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 	}
-	items += fmt.Sprintf("%s %s\n", addCursor, addStyle.Render("[+] Add New Server"))
+	items += fmt.Sprintf("\n%s %s\n", cursor, btnStyle.Render("[+] Add New Server"))
+	
+	items += "\n" + lipgloss.NewStyle().Foreground(accentColor).Render(m.status)
 
-	statusBlock := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render(m.status)
-
-	return card.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			titleCard.Render("SERVER CONNECTIONS"),
-			items,
-			"",
-			statusBlock,
-		),
-	)
+	return card.Render(items)
 }
 
 func (m Model) Title() string { return "Servers" }

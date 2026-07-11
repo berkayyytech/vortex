@@ -11,6 +11,7 @@ import (
 
 	"main/internal/agent"
 	"main/internal/stats"
+	"main/internal/theme"
 )
 
 // Model holds the state for the Dashboard page.
@@ -53,28 +54,57 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func colorizeBar(percent float64) string {
+	totalBlocks := 30
+	filledBlocks := int((percent / 100.0) * float64(totalBlocks))
+	if filledBlocks < 0 { filledBlocks = 0 }
+	if filledBlocks > totalBlocks { filledBlocks = totalBlocks }
+	
+	filled := strings.Repeat("█", filledBlocks)
+	empty := strings.Repeat("░", totalBlocks-filledBlocks)
+
+	var color lipgloss.Color
+	if percent < 50 {
+		color = lipgloss.Color("46") // Green
+	} else if percent < 80 {
+		color = lipgloss.Color("226") // Yellow
+	} else {
+		color = lipgloss.Color("196") // Red
+	}
+
+	return lipgloss.NewStyle().Foreground(color).Render(filled) + 
+	       lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(empty) +
+	       lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf(" %3d%%", int(percent)))
+}
+
 func (m Model) View() string {
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
+		BorderForeground(theme.Current.Dim).
 		Padding(1, 3).
-		Margin(1, 0)
+		Margin(1, 0).
+		Width(60)
 
 	titleCard := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("205")).
+		Foreground(theme.Current.Accent).
 		MarginBottom(1)
+
+	labelStyle := lipgloss.NewStyle().Foreground(theme.Current.Text).Width(8)
 
 	return card.Render(
 		strings.Join([]string{
 			titleCard.Render("HARDWARE UTILIZATION"),
-			fmt.Sprintf("CPU      %s", stats.FormatBar(m.sysStats.CPUPercent)),
-			fmt.Sprintf("RAM      %s", stats.FormatBar(m.sysStats.RAMPercent)),
-			fmt.Sprintf("Disk     %s", stats.FormatBar(m.sysStats.DiskPercent)),
 			"",
-			fmt.Sprintf("Uptime   %s", m.sysStats.Uptime),
-			fmt.Sprintf("OS       %s", m.sysStats.OS),
-			fmt.Sprintf("Kernel   %s", m.sysStats.Kernel),
+			labelStyle.Render("CPU") + " " + colorizeBar(m.sysStats.CPUPercent),
+			labelStyle.Render("RAM") + " " + colorizeBar(m.sysStats.RAMPercent),
+			labelStyle.Render("Disk") + " " + colorizeBar(m.sysStats.DiskPercent),
+			"",
+			titleCard.Render("SYSTEM INFORMATION"),
+			"",
+			fmt.Sprintf("%s %s", labelStyle.Render("Uptime"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Uptime)),
+			fmt.Sprintf("%s %s", labelStyle.Render("OS"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.OS)),
+			fmt.Sprintf("%s %s", labelStyle.Render("Kernel"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Kernel)),
 		}, "\n"),
 	)
 }

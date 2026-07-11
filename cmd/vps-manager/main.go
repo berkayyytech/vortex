@@ -35,6 +35,9 @@ type Router struct {
 	activeUser string
 	activePort string
 
+	width  int
+	height int
+
 	paletteActive bool
 	paletteCursor int
 	paletteItems  []string
@@ -97,6 +100,17 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return payload
 		})
+
+	case tea.WindowSizeMsg:
+		r.width = msg.Width
+		r.height = msg.Height
+
+		// Broadcast window resize to all pages
+		for i, p := range r.pages {
+			updatedModel, _ := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+		}
+		return r, nil
 
 	case agent.Payload:
 		// Queue next tick when we successfully receive a payload
@@ -225,35 +239,48 @@ func (r Router) View() string {
 	dimColor := theme.Current.Dim
 
 	sidebarStyle := lipgloss.NewStyle().
-		Width(24).
+		Width(26).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder(), false, true, false, false).
 		BorderForeground(dimColor)
 
 	contentStyle := lipgloss.NewStyle().
-		Padding(1, 2)
+		Padding(1, 4)
 
+	logo := `
+ █  █ █▀▀█ █▀▀█
+ █  █ █  █ █▄▄▀
+  ▀▀  ▀▀▀▀ ▀ ▀▀
+ V O R T E X
+`
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(accentColor).
-		Render("VORTEX VPS")
+		Render(logo)
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(primaryColor)
+		Foreground(primaryColor).
+		Background(theme.Current.HighlightBg).
+		Width(22).
+		PaddingLeft(1)
 
 	normalStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
+		Foreground(theme.Current.Text).
+		Width(22).
+		PaddingLeft(1)
 
 	var items []string
 	items = append(items, title)
 	items = append(items, "")
+	items = append(items, lipgloss.NewStyle().Foreground(dimColor).Render(" MAIN MENU"))
+	items = append(items, "")
 
 	// Dynamically build the sidebar from the registered pages
 	for i, p := range r.pages {
-		label := fmt.Sprintf("%s %s", p.Icon(), p.Title())
+		label := fmt.Sprintf("%s  %s", p.Icon(), p.Title())
 		if i == r.cursor {
-			items = append(items, selectedStyle.Render("▶ "+label))
+			items = append(items, selectedStyle.Render("▌ "+label))
 		} else {
 			items = append(items, normalStyle.Render("  "+label))
 		}
@@ -272,10 +299,13 @@ func (r Router) View() string {
 		Render(activePage.Title())
 
 	content := contentStyle.Render(
-		header + "\n" + activePage.View(),
+		header + "\n\n" + activePage.View(),
 	)
 
-	// Render Command Palette Overlay
+	// Combine Sidebar and Content horizontally
+	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
+
+	// Render Command Palette Overlay if active
 	if r.paletteActive {
 		paletteBox := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -297,19 +327,14 @@ func (r Router) View() string {
 				pItems,
 		)
 
-		// Place overlay roughly in the center
-		content = lipgloss.Place(
-			60, 20,
-			lipgloss.Center, lipgloss.Center,
-			overlay,
-		)
+		// Place overlay roughly in the center over the layout
+		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, overlay)
+	} else if r.width > 0 && r.height > 0 {
+		// Perfectly center the main UI layout in the terminal window
+		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
 	}
 
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		sidebar,
-		content,
-	)
+	return layout
 }
 
 type agentTick time.Time
