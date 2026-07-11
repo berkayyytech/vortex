@@ -112,6 +112,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							}
 						}
 						config.SaveSettings()
+						if s.ID == "appearance.theme" {
+							theme.SetTheme(s.Value.(string))
+						}
 						m.statusMsg = "Saved " + s.Name
 					}
 				}

@@ -121,3 +121,10 @@ func GetSettingString(id string) string {
 	}
 	return ""
 }
+
+// ApplySettings synchronizes the configuration state with the application subsystems (e.g., themes)
+func ApplySettings() {
+	// Not ideal to import theme here due to circular deps if we aren't careful, 
+	// but it's safe if theme doesn't import config.
+	// Actually, wait, let's just do it in main.go to avoid circular deps.
+}

@@ -27,8 +27,8 @@ func InitDefaults() {
 		Category:    "Appearance",
 		Description: "The visual theme of the application",
 		Type:        TypeSelect,
-		Default:     "Vortex Dark",
-		Options:     []string{"Vortex Dark", "Nord", "Dracula", "Catppuccin"},
+		Default:     "Catppuccin",
+		Options:     []string{"Catppuccin", "Nord", "Tokyo Night", "Dracula", "Gruvbox", "Monokai", "Matrix", "Cyberpunk", "Rose Pine"},
 	})
 	RegisterSetting(Setting{
 		ID:          "appearance.compact",

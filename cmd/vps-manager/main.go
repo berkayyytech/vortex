@@ -8,20 +8,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/pages"
+	"main/internal/pages/apps"
+	"main/internal/pages/backup"
 	"main/internal/pages/dashboard"
 	"main/internal/pages/docker"
 	"main/internal/pages/files"
 	"main/internal/pages/logs"
-	"main/internal/pages/apps"
-	"main/internal/pages/backup"
+	"main/internal/pages/security"
 	"main/internal/pages/servers"
 	"main/internal/pages/services"
-	"main/internal/pages/security"
 	"main/internal/pages/settings"
 	"main/internal/pages/terminal"
 
-	"time"
 	"os/exec"
+	"time"
 
 	"main/internal/agent"
 	"main/internal/components"
@@ -32,11 +32,11 @@ import (
 )
 
 type Router struct {
-	pages       []pages.Page
-	sidebarIdx  int
-	activeIdx   int
-	sshClient   *sshlib.Client
-	sysEngine   *sysengine.Engine
+	pages      []pages.Page
+	sidebarIdx int
+	activeIdx  int
+	sshClient  *sshlib.Client
+	sysEngine  *sysengine.Engine
 	activeHost string
 	activeUser string
 	activePort string
@@ -88,6 +88,36 @@ func initialModel() Router {
 		Description: "Switch to the Application Manager view",
 		Action: func() tea.Cmd {
 			return func() tea.Msg { return switchTabMsg{idx: 2} }
+		},
+	})
+
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Files",
+		Description: "Switch to the File Manager view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 5} }
+		},
+	})
+
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Logs",
+		Description: "Switch to the Logs view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 6} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Security",
+		Description: "Switch to the Security view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 8} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Backup",
+		Description: "Switch to the Backup view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 9} }
 		},
 	})
 	r.palette.RegisterCommand(components.Command{
@@ -220,7 +250,6 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, tea.Quit
 		case "ctrl+p":
 			r.palette.Active = !r.palette.Active
-			r.palette.Update(msg)
 			return r, nil
 		case "shift+up", "[":
 			if r.sidebarIdx > 0 {
@@ -315,10 +344,10 @@ func (r Router) View() string {
 	// Dynamically build the sidebar from the registered pages
 	for i, p := range r.pages {
 		label := fmt.Sprintf("%s  %s", p.Icon(), p.Title())
-		
+
 		var renderedItem string
 		if i == r.sidebarIdx && i == r.activeIdx {
-			renderedItem = selectedStyle.Render("▌ "+label)
+			renderedItem = selectedStyle.Render("▌ " + label)
 		} else if i == r.sidebarIdx {
 			// Hovering but not active
 			renderedItem = lipgloss.NewStyle().Foreground(theme.Current.Text).Background(lipgloss.Color("238")).Width(22).PaddingLeft(1).Render("  " + label)
@@ -326,7 +355,7 @@ func (r Router) View() string {
 			// Active but not hovering
 			renderedItem = lipgloss.NewStyle().Foreground(primaryColor).Width(22).PaddingLeft(1).Render("▌ " + label)
 		} else {
-			renderedItem = normalStyle.Render("  "+label)
+			renderedItem = normalStyle.Render("  " + label)
 		}
 		items = append(items, renderedItem)
 	}
@@ -336,7 +365,7 @@ func (r Router) View() string {
 
 	// Render the active page
 	activePage := r.pages[r.activeIdx]
-	
+
 	header := lipgloss.NewStyle().
 		Bold(true).
 		Underline(true).
@@ -344,7 +373,9 @@ func (r Router) View() string {
 		Render(activePage.Title())
 
 	var pageView string
-	if r.sshClient == nil && r.activeIdx != 0 {
+	if r.palette.Active {
+		pageView = r.palette.View()
+	} else if r.sshClient == nil && r.activeIdx != 0 {
 		pageView = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("❌ Please connect to a server in the 'Servers' tab first.")
 	} else {
 		pageView = activePage.View()
@@ -363,12 +394,7 @@ func (r Router) View() string {
 		layout = lipgloss.JoinVertical(lipgloss.Center, layout, r.toast.View())
 	}
 
-	// Overlay Command Palette if active
-	if r.palette.Active {
-		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center,
-			lipgloss.JoinVertical(lipgloss.Center, layout, "\n", r.palette.View()),
-		)
-	}
+	// (Command Palette is now rendered inline above)
 
 	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
 }
@@ -376,6 +402,7 @@ func (r Router) View() string {
 func main() {
 	config.InitDefaults()
 	config.LoadSettings()
+	theme.SetTheme(config.GetSettingString("appearance.theme"))
 
 	p := tea.NewProgram(initialModel())
 

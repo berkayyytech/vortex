@@ -108,17 +108,18 @@ func (m Model) View() string {
 			}
 			
 			runtimeTag := lipgloss.NewStyle().Foreground(theme.Current.Accent).Render("[" + app.Runtime + "]")
-			portTag := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("Port: " + app.Port)
+			cpuTag := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(app.Port) // Using port field for CPU
 			pidTag := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("PID: " + app.PID)
+			userTag := lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Render(app.Status) // Using status field for User
 			
-			items += fmt.Sprintf("%s %s %s  %s  %s\n", cursor, runtimeTag, style.Render(app.Name), portTag, pidTag)
+			items += fmt.Sprintf("%s %s %s  %s  %s  %s\n", cursor, runtimeTag, style.Render(app.Name), cpuTag, pidTag, userTag)
 		}
 	}
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [R] Refresh  [S] Stop  [Shift+K] Force Kill")
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		components.Title("APPLICATION MANAGER"),
+		components.Title("PROCESS MANAGER (Top 100)"),
 		items,
 		controls,
 	)
