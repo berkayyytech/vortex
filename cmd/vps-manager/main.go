@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"main/internal/docker"
+	"main/internal/network"
 	"main/internal/stats"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,33 +17,51 @@ import (
 type model struct {
 	cursor   int
 	menu     []string
-	sysStats stats.SystemStats
+	sysStats    stats.SystemStats
+	netInfo     network.NetworkInfo
+	dockerStats docker.DockerStats
 }
 
 func initialModel() model {
 	return model{
 		menu: []string{
 			"Dashboard",
+			"Network",
 			"Docker",
 			"Services",
 			"Files",
 			"Logs",
 			"SSH",
 			"Settings",
-			"Network",
 			"Test",
+		},
+		netInfo: network.NetworkInfo{
+			Status: "Running speedtest (approx 15s)...",
+		},
+		dockerStats: docker.DockerStats{
+			Status: "Connecting...",
 		},
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return fetchStatsCmd
+	return tea.Batch(fetchStatsCmd, fetchNetStatsCmd, fetchDockerStatsCmd)
 }
 
 type statsMsg stats.SystemStats
+type netMsg network.NetworkInfo
+type dockerMsg docker.DockerStats
 
 func fetchStatsCmd() tea.Msg {
 	return statsMsg(stats.GetSystemStats())
+}
+
+func fetchNetStatsCmd() tea.Msg {
+	return netMsg(network.GetNetworkStats())
+}
+
+func fetchDockerStatsCmd() tea.Msg {
+	return dockerMsg(docker.GetDockerStats())
 }
 
 // Tick command to update stats every 5 seconds
@@ -87,6 +107,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statsMsg:
 		m.sysStats = stats.SystemStats(msg)
 		return m, tickCmd()
+
+	case netMsg:
+		m.netInfo = network.NetworkInfo(msg)
+		return m, nil
+
+	case dockerMsg:
+		m.dockerStats = docker.DockerStats(msg)
+		return m, nil
 
 	case tickMsg:
 		return m, fetchStatsCmd
@@ -164,45 +192,81 @@ func (m model) View() string {
 	case 0:
 		// Already handled above
 	case 1:
+		netTable := lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("238")).
+			Padding(0, 1).
+			Render(
+				lipgloss.JoinVertical(lipgloss.Left,
+					lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("%-15s %-18s %-20s", "INTERFACE", "IP ADDRESS", "TRAFFIC (TX/RX)")),
+					"────────────────────────────────────────────────────────",
+					fmt.Sprintf("%-15s %-18s %-20s", "eth0", "192.168.1.45", "1.2 GB / 4.5 GB"),
+					fmt.Sprintf("%-15s %-18s %-20s", "lo", "127.0.0.1", "12 MB / 12 MB"),
+					fmt.Sprintf("%-15s %-18s %-20s", "docker0", "172.17.0.1", "340 MB / 150 MB"),
+				),
+			)
+
+		connStats := card.Render(
+			lipgloss.JoinVertical(lipgloss.Left,
+				lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render("CONNECTIONS & SPEEDTEST"),
+				"",
+				fmt.Sprintf("Server:      %s", m.netInfo.ServerName),
+				fmt.Sprintf("Ping:        %s", m.netInfo.Ping),
+				fmt.Sprintf("Download:    %.2f Mbps", m.netInfo.Download),
+				fmt.Sprintf("Upload:      %.2f Mbps", m.netInfo.Upload),
+				fmt.Sprintf("Status:      %s", m.netInfo.Status),
+				"",
+				"Active TCP:  42",
+				"Listening:   22 (SSH), 80 (HTTP), 443 (HTTPS)",
+			),
+		)
+
 		content = contentStyle.Render(
 			header + "\n\n" +
-				"Active Containers: 5\n" +
-				"Images: 12\n" +
-				"Networks: 3\n" +
-				"Volumes: 7",
+				netTable + "\n\n" +
+				connStats,
 		)
 	case 2:
+		content = contentStyle.Render(
+			header + "\n\n" +
+				fmt.Sprintf("Status:             %s\n\n", m.dockerStats.Status) +
+				fmt.Sprintf("Active Containers:  %d\n", m.dockerStats.Containers) +
+				fmt.Sprintf("Images:             %d\n", m.dockerStats.Images) +
+				fmt.Sprintf("Networks:           %d\n", m.dockerStats.Networks) +
+				fmt.Sprintf("Volumes:            %d", m.dockerStats.Volumes),
+		)
+	case 3:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"Active Services: 8\n" +
 				"Failed Services: 1\n" +
 				"Inactive Services: 2",
 		)
-	case 3:
+	case 4:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"File Manager Placeholder\n" +
 				"List of files and directories would be displayed here.",
 		)
-	case 4:
+	case 5:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"Log Viewer Placeholder\n" +
 				"Recent logs would be displayed here.",
 		)
-	case 5:
+	case 6:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"SSH Access Placeholder\n" +
 				"SSH connection details would be displayed here.",
 		)
-	case 6:
+	case 7:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"Settings Placeholder\n" +
 				"Configuration options would be displayed here.",
 		)
-	case 7:
+	case 8:
 		content = contentStyle.Render(
 			header + "\n\n" +
 				"Test Placeholder\n" +
