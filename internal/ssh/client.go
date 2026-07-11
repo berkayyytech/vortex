@@ -17,6 +17,7 @@ import (
 type ConnectedMsg struct {
 	Client *Client
 	Host   string
+	Port   string
 	User   string
 }
 

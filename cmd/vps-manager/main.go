@@ -33,6 +33,7 @@ type Router struct {
 	sshClient  *sshlib.Client
 	activeHost string
 	activeUser string
+	activePort string
 
 	paletteActive bool
 	paletteCursor int
@@ -81,6 +82,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r.sshClient = msg.Client
 		r.activeHost = msg.Host
 		r.activeUser = msg.User
+		r.activePort = msg.Port
 		r.cursor = 1 // Auto-switch to Dashboard
 
 		// Async agent deployment
@@ -124,7 +126,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case terminal.OpenShellMsg:
 		if r.activeHost != "" {
-			c := exec.Command("ssh", r.activeUser+"@"+r.activeHost)
+			c := exec.Command("ssh", "-p", r.activePort, r.activeUser+"@"+r.activeHost)
 			return r, tea.ExecProcess(c, func(err error) tea.Msg {
 				return nil
 			})
@@ -171,19 +173,19 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			return r, tea.Quit
 		case "ctrl+p":
 			r.paletteActive = true
 			return r, nil
-		case "tab", "right", "l":
+		case "tab":
 			if r.cursor < len(r.pages)-1 {
 				r.cursor++
 			} else {
 				r.cursor = 0
 			}
 			return r, nil
-		case "shift+tab", "left", "h":
+		case "shift+tab":
 			if r.cursor > 0 {
 				r.cursor--
 			} else {

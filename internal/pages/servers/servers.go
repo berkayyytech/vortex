@@ -172,7 +172,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return fmt.Errorf("❌ Connection failed: %v", err)
 				}
-				return sshlib.ConnectedMsg{Client: client, Host: s.Host, User: s.User}
+				return sshlib.ConnectedMsg{Client: client, Host: s.Host, Port: s.Port, User: s.User}
 			}
 		}
 

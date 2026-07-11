@@ -1,6 +1,10 @@
 package services
 
-import "fmt"
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+)
 
 type Service struct {
 	Name   string
@@ -9,14 +13,28 @@ type Service struct {
 }
 
 func GetServices() []Service {
-	// In production, execute systemctl or use dbus
-	return []Service{
-		{Name: "nginx.service", Status: "active (running)", Uptime: "12d 4h"},
-		{Name: "postgresql.service", Status: "active (running)", Uptime: "45d 1h"},
-		{Name: "docker.service", Status: "active (running)", Uptime: "5d 10h"},
-		{Name: "redis.service", Status: "failed", Uptime: "-"},
-		{Name: "ssh.service", Status: "active (running)", Uptime: "60d 2h"},
+	// Execute systemctl to get real services
+	out, err := exec.Command("systemctl", "list-units", "--type=service", "--no-pager", "--no-legend").Output()
+	if err != nil {
+		return []Service{
+			{Name: "systemd not available on this OS", Status: "error", Uptime: "-"},
+		}
 	}
+
+	lines := strings.Split(string(out), "\n")
+	var services []Service
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			// e.g. "nginx.service loaded active running Nginx Web Server"
+			services = append(services, Service{
+				Name:   fields[0],
+				Status: fields[3], // we use substate as status (e.g. running, exited, failed)
+				Uptime: "-",
+			})
+		}
+	}
+	return services
 }
 
 func FormatServices(services []Service) string {
