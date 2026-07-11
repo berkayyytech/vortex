@@ -25,6 +25,7 @@ import (
 
 	"main/internal/agent"
 	"main/internal/components"
+	"main/internal/config"
 	sysengine "main/internal/engine/system"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
@@ -373,6 +374,9 @@ func (r Router) View() string {
 }
 
 func main() {
+	config.InitDefaults()
+	config.LoadSettings()
+
 	p := tea.NewProgram(initialModel())
 
 	if _, err := p.Run(); err != nil {
