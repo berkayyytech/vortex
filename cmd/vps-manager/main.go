@@ -3,274 +3,272 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
-	"time"
-
-	"main/internal/docker"
-	"main/internal/network"
-	"main/internal/stats"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"main/internal/pages"
+	"main/internal/pages/dashboard"
+	"main/internal/pages/docker"
+	"main/internal/pages/files"
+	"main/internal/pages/logs"
+	"main/internal/pages/network"
+	"main/internal/pages/servers"
+	"main/internal/pages/services"
+	"main/internal/pages/settings"
+	"main/internal/pages/terminal"
+
+	"encoding/json"
+	"os/exec"
+	"time"
+
+	"main/internal/agent"
+	sshlib "main/internal/ssh"
 )
 
-type model struct {
-	cursor   int
-	menu     []string
-	sysStats    stats.SystemStats
-	netInfo     network.NetworkInfo
-	dockerStats docker.DockerStats
+type Router struct {
+	pages      []pages.Page
+	cursor     int
+	sshClient  *sshlib.Client
+	activeHost string
+	activeUser string
+
+	paletteActive bool
+	paletteCursor int
+	paletteItems  []string
 }
 
-func initialModel() model {
-	return model{
-		menu: []string{
-			"Dashboard",
-			"Network",
-			"Docker",
-			"Services",
-			"Files",
-			"Logs",
-			"SSH",
-			"Settings",
-			"Test",
+func initialModel() Router {
+	return Router{
+		pages: []pages.Page{
+			servers.New(),
+			dashboard.New(),
+			network.New(),
+			docker.New(),
+			services.New(),
+			files.New(),
+			logs.New(),
+			terminal.New(),
+			settings.New(),
 		},
-		netInfo: network.NetworkInfo{
-			Status: "Running speedtest (approx 15s)...",
-		},
-		dockerStats: docker.DockerStats{
-			Status: "Connecting...",
+		cursor: 0,
+		paletteItems: []string{
+			"Restart Docker Engine",
+			"Restart Nginx",
+			"Clear System Cache",
+			"Reboot Server",
+			"Disconnect SSH",
 		},
 	}
 }
 
-func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchStatsCmd, fetchNetStatsCmd, fetchDockerStatsCmd)
-}
-
-type statsMsg stats.SystemStats
-type netMsg network.NetworkInfo
-type dockerMsg docker.DockerStats
-
-func fetchStatsCmd() tea.Msg {
-	return statsMsg(stats.GetSystemStats())
-}
-
-func fetchNetStatsCmd() tea.Msg {
-	return netMsg(network.GetNetworkStats())
-}
-
-func fetchDockerStatsCmd() tea.Msg {
-	return dockerMsg(docker.GetDockerStats())
-}
-
-// Tick command to update stats every 5 seconds
-type tickMsg time.Time
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second*5, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-// Reusable navigation handler
-func (m model) handleNavigation(key string) model {
-	switch key {
-	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
+func (r Router) Init() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, p := range r.pages {
+		if cmd := p.Init(); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
-	case "down", "j":
-		if m.cursor < len(m.menu)-1 {
-			m.cursor++
-		}
-
-	case "enter":
-		m.cursor = m.cursor // Placeholder for future action on selection
 	}
-
-	return m
+	return tea.Batch(cmds...)
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
 	switch msg := msg.(type) {
+	case sshlib.ConnectedMsg:
+		r.sshClient = msg.Client
+		r.activeHost = msg.Host
+		r.activeUser = msg.User
+		r.cursor = 1 // Auto-switch to Dashboard
+
+		// Async agent deployment
+		cmds = append(cmds, func() tea.Msg {
+			out, err := r.sshClient.DeployAndRunAgent()
+			if err != nil {
+				return fmt.Errorf("Deployment failed: %v", err)
+			}
+			var payload agent.Payload
+			if err := json.Unmarshal(out, &payload); err != nil {
+				return fmt.Errorf("JSON Parse failed: %v", err)
+			}
+			return payload
+		})
+
+	case agent.Payload:
+		// Queue next tick when we successfully receive a payload
+		cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+			return agentTick(t)
+		}))
+
+	case agentTick:
+		if r.sshClient != nil {
+			cmds = append(cmds, func() tea.Msg {
+				out, err := r.sshClient.Run("/tmp/vortex-agent payload")
+				if err != nil {
+					return nil // Ignore momentary network drops
+				}
+				var payload agent.Payload
+				json.Unmarshal([]byte(out), &payload)
+
+				// Fetch live logs only if the Logs tab is active
+				if r.cursor == 5 {
+					logsOut := r.sshClient.RunCommand("journalctl -n 25 --no-pager")
+					payload.Logs = logsOut
+				}
+				// Fetch remote files only if the Files tab is active
+				if r.cursor == 4 {
+					filesOut := r.sshClient.RunCommand("ls -lah --color=never /")
+					payload.Files = filesOut
+				}
+
+				return payload
+			})
+		}
+
+	case terminal.OpenShellMsg:
+		if r.activeHost != "" {
+			c := exec.Command("ssh", r.activeUser+"@"+r.activeHost)
+			return r, tea.ExecProcess(c, func(err error) tea.Msg {
+				return nil
+			})
+		}
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
+		if r.paletteActive {
+			switch msg.String() {
+			case "esc", "ctrl+p":
+				r.paletteActive = false
+			case "up", "k":
+				if r.paletteCursor > 0 {
+					r.paletteCursor--
+				}
+			case "down", "j":
+				if r.paletteCursor < len(r.paletteItems)-1 {
+					r.paletteCursor++
+				}
+			case "enter":
+				// Placeholder: Execute selected command
+				r.paletteActive = false
+				if r.sshClient != nil && r.paletteCursor == 0 {
+					// Example: Restart docker
+					r.sshClient.RunCommand("systemctl restart docker")
+				}
+			}
+			return r, nil
 		}
 
-		// Reuse navigation logic
-		m = m.handleNavigation(msg.String())
-
-	case statsMsg:
-		m.sysStats = stats.SystemStats(msg)
-		return m, tickCmd()
-
-	case netMsg:
-		m.netInfo = network.NetworkInfo(msg)
-		return m, nil
-
-	case dockerMsg:
-		m.dockerStats = docker.DockerStats(msg)
-		return m, nil
-
-	case tickMsg:
-		return m, fetchStatsCmd
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return r, tea.Quit
+		case "ctrl+p":
+			r.paletteActive = true
+		case "up", "k":
+			if r.cursor > 0 {
+				r.cursor--
+			}
+		case "down", "j":
+			if r.cursor < len(r.pages)-1 {
+				r.cursor++
+			}
+		}
 	}
 
-	return m, nil
+	// Broadcast the message to all pages so they can update their background state
+	for i, p := range r.pages {
+		updatedModel, cmd := p.Update(msg)
+		r.pages[i] = updatedModel.(pages.Page)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
+	return r, tea.Batch(cmds...)
 }
 
-func (m model) View() string {
+func (r Router) View() string {
+	accentColor := lipgloss.Color("205")
+	primaryColor := lipgloss.Color("86")
+	dimColor := lipgloss.Color("240")
 
 	sidebarStyle := lipgloss.NewStyle().
-		Width(22).
+		Width(24).
 		Padding(1, 2).
-		Border(lipgloss.NormalBorder(), false, true, false, false).
-		BorderForeground(lipgloss.Color("63"))
+		Border(lipgloss.RoundedBorder(), false, true, false, false).
+		BorderForeground(dimColor)
 
 	contentStyle := lipgloss.NewStyle().
 		Padding(1, 2)
 
 	title := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		Render("VORTEX")
+		Foreground(accentColor).
+		Render("VORTEX VPS")
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("86"))
+		Foreground(primaryColor)
 
-	normalStyle := lipgloss.NewStyle()
+	normalStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252"))
 
 	var items []string
 	items = append(items, title)
 	items = append(items, "")
 
-	for i, item := range m.menu {
-		if i == m.cursor {
-			items = append(items, selectedStyle.Render("> "+item))
+	// Dynamically build the sidebar from the registered pages
+	for i, p := range r.pages {
+		label := fmt.Sprintf("%s %s", p.Icon(), p.Title())
+		if i == r.cursor {
+			items = append(items, selectedStyle.Render("▶ "+label))
 		} else {
-			items = append(items, normalStyle.Render("  "+item))
+			items = append(items, normalStyle.Render("  "+label))
 		}
 	}
 
 	menu := lipgloss.JoinVertical(lipgloss.Left, items...)
-
 	sidebar := sidebarStyle.Render(menu)
 
+	// Render the active page
+	activePage := r.pages[r.cursor]
+	
 	header := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(lipgloss.Color("86")).
-		Render(m.menu[m.cursor])
-
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
-		Padding(1, 2)
-
-	statsView := card.Render(
-		strings.Join([]string{
-			fmt.Sprintf("CPU      %s", stats.FormatBar(m.sysStats.CPUPercent)),
-			fmt.Sprintf("RAM      %s", stats.FormatBar(m.sysStats.RAMPercent)),
-			fmt.Sprintf("Disk     %s", stats.FormatBar(m.sysStats.DiskPercent)),
-			"",
-			fmt.Sprintf("Uptime   %s", m.sysStats.Uptime),
-			fmt.Sprintf("OS       %s", m.sysStats.OS),
-			fmt.Sprintf("Kernel   %s", m.sysStats.Kernel),
-		}, "\n"),
-	)
+		Underline(true).
+		Foreground(primaryColor).
+		Render(activePage.Title())
 
 	content := contentStyle.Render(
-		header + "\n\n" +
-			statsView,
+		header + "\n" + activePage.View(),
 	)
 
-	switch m.cursor {
-	case 0:
-		// Already handled above
-	case 1:
-		netTable := lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(lipgloss.Color("238")).
-			Padding(0, 1).
-			Render(
-				lipgloss.JoinVertical(lipgloss.Left,
-					lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("%-15s %-18s %-20s", "INTERFACE", "IP ADDRESS", "TRAFFIC (TX/RX)")),
-					"────────────────────────────────────────────────────────",
-					fmt.Sprintf("%-15s %-18s %-20s", "eth0", "192.168.1.45", "1.2 GB / 4.5 GB"),
-					fmt.Sprintf("%-15s %-18s %-20s", "lo", "127.0.0.1", "12 MB / 12 MB"),
-					fmt.Sprintf("%-15s %-18s %-20s", "docker0", "172.17.0.1", "340 MB / 150 MB"),
-				),
-			)
+	// Render Command Palette Overlay
+	if r.paletteActive {
+		paletteBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(accentColor).
+			Padding(1, 4).
+			Background(lipgloss.Color("236"))
 
-		connStats := card.Render(
-			lipgloss.JoinVertical(lipgloss.Left,
-				lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true).Render("CONNECTIONS & SPEEDTEST"),
-				"",
-				fmt.Sprintf("Server:      %s", m.netInfo.ServerName),
-				fmt.Sprintf("Ping:        %s", m.netInfo.Ping),
-				fmt.Sprintf("Download:    %.2f Mbps", m.netInfo.Download),
-				fmt.Sprintf("Upload:      %.2f Mbps", m.netInfo.Upload),
-				fmt.Sprintf("Status:      %s", m.netInfo.Status),
-				"",
-				"Active TCP:  42",
-				"Listening:   22 (SSH), 80 (HTTP), 443 (HTTPS)",
-			),
+		var pItems string
+		for i, item := range r.paletteItems {
+			if i == r.paletteCursor {
+				pItems += lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("▶ "+item) + "\n"
+			} else {
+				pItems += "  " + item + "\n"
+			}
+		}
+
+		overlay := paletteBox.Render(
+			lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("COMMAND PALETTE (Ctrl+P)") + "\n\n" +
+				pItems,
 		)
 
-		content = contentStyle.Render(
-			header + "\n\n" +
-				netTable + "\n\n" +
-				connStats,
-		)
-	case 2:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				fmt.Sprintf("Status:             %s\n\n", m.dockerStats.Status) +
-				fmt.Sprintf("Active Containers:  %d\n", m.dockerStats.Containers) +
-				fmt.Sprintf("Images:             %d\n", m.dockerStats.Images) +
-				fmt.Sprintf("Networks:           %d\n", m.dockerStats.Networks) +
-				fmt.Sprintf("Volumes:            %d", m.dockerStats.Volumes),
-		)
-	case 3:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"Active Services: 8\n" +
-				"Failed Services: 1\n" +
-				"Inactive Services: 2",
-		)
-	case 4:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"File Manager Placeholder\n" +
-				"List of files and directories would be displayed here.",
-		)
-	case 5:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"Log Viewer Placeholder\n" +
-				"Recent logs would be displayed here.",
-		)
-	case 6:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"SSH Access Placeholder\n" +
-				"SSH connection details would be displayed here.",
-		)
-	case 7:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"Settings Placeholder\n" +
-				"Configuration options would be displayed here.",
-		)
-	case 8:
-		content = contentStyle.Render(
-			header + "\n\n" +
-				"Test Placeholder\n" +
-				"This is a test section for future features.",
+		// Place overlay roughly in the center
+		content = lipgloss.Place(
+			60, 20,
+			lipgloss.Center, lipgloss.Center,
+			overlay,
 		)
 	}
 
@@ -280,6 +278,8 @@ func (m model) View() string {
 		content,
 	)
 }
+
+type agentTick time.Time
 
 func main() {
 	p := tea.NewProgram(initialModel())
