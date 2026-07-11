@@ -9,7 +9,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/agent"
-	"main/internal/pages"
+	"main/internal/components"
+	fileengine "main/internal/engine/files"
+	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
 
@@ -17,6 +19,7 @@ type Model struct {
 	cwd    string
 	files  []string
 	cursor int
+	engine *fileengine.Engine
 }
 
 func New() Model {
@@ -33,15 +36,16 @@ type filesResponseMsg struct {
 	files []string
 }
 
-func fetchDir(dir string) tea.Cmd {
+func fetchDir(engine *fileengine.Engine, dir string) tea.Cmd {
 	return func() tea.Msg {
-		return pages.RunRemoteQueryMsg{
-			Command: "ls -1pA " + dir,
-			ResponseHandler: func(out string) tea.Msg {
-				lines := strings.Split(strings.TrimSpace(out), "\n")
-				return filesResponseMsg{files: lines}
-			},
+		if engine == nil {
+			return nil
 		}
+		files, err := engine.ListDirectory(dir)
+		if err != nil {
+			return filesResponseMsg{files: []string{"Error: " + err.Error()}}
+		}
+		return filesResponseMsg{files: files}
 	}
 }
 
@@ -71,35 +75,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cwd = path.Join(m.cwd, selected)
 					m.cursor = 0
 					m.files = []string{"Loading..."}
-					return m, fetchDir(m.cwd)
+					return m, fetchDir(m.engine, m.cwd)
 				}
 			}
 		case "backspace", "b":
 			m.cwd = path.Dir(m.cwd)
 			m.cursor = 0
 			m.files = []string{"Loading..."}
-			return m, fetchDir(m.cwd)
+			return m, fetchDir(m.engine, m.cwd)
 		}
 
+	case sshlib.ConnectedMsg:
+		m.engine = fileengine.NewEngine(msg.Client)
+		return m, fetchDir(m.engine, m.cwd)
+
 	case agent.Payload:
-		// Automatically refresh current directory every 5s on payload tick
-		return m, fetchDir(m.cwd)
+		// Refresh when payload arrives if we have an engine
+		return m, fetchDir(m.engine, m.cwd)
 	}
 	return m, nil
 }
 
 func (m Model) View() string {
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current.Dim).
-		Padding(1, 3).
-		Margin(1, 0)
-
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Current.Accent).
-		MarginBottom(1)
-
 	var items string
 	for i, f := range m.files {
 		if f == "" {
@@ -124,14 +121,14 @@ func (m Model) View() string {
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [ENTER] Enter Directory  [BACKSPACE] Go Up")
 
-	return card.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			titleCard.Render("REMOTE FILE EXPLORER"),
-			lipgloss.NewStyle().Foreground(theme.Current.Primary).Render("CWD: "+m.cwd)+"\n",
-			items,
-			controls,
-		),
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		components.Title("REMOTE FILE EXPLORER"),
+		lipgloss.NewStyle().Foreground(theme.Current.Primary).Render("CWD: "+m.cwd)+"\n",
+		items,
+		controls,
 	)
+
+	return components.Card(content, 60)
 }
 
 func (m Model) Title() string { return "Files" }

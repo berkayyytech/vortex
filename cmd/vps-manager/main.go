@@ -12,17 +12,17 @@ import (
 	"main/internal/pages/docker"
 	"main/internal/pages/files"
 	"main/internal/pages/logs"
-	"main/internal/pages/network"
+	"main/internal/pages/apps"
 	"main/internal/pages/servers"
 	"main/internal/pages/services"
 	"main/internal/pages/settings"
 	"main/internal/pages/terminal"
 
-	"encoding/json"
-	"os/exec"
 	"time"
+	"os/exec"
 
 	"main/internal/agent"
+	sysengine "main/internal/engine/system"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
@@ -32,6 +32,7 @@ type Router struct {
 	sidebarIdx  int
 	activeIdx   int
 	sshClient   *sshlib.Client
+	sysEngine   *sysengine.Engine
 	activeHost string
 	activeUser string
 	activePort string
@@ -49,7 +50,7 @@ func initialModel() Router {
 		pages: []pages.Page{
 			servers.New(),
 			dashboard.New(),
-			network.New(),
+			apps.New(),
 			docker.New(),
 			services.New(),
 			files.New(),
@@ -85,6 +86,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case sshlib.ConnectedMsg:
 		r.sshClient = msg.Client
+		r.sysEngine = sysengine.NewEngine(r.sshClient)
 		r.activeHost = msg.Host
 		r.activeUser = msg.User
 		r.activePort = msg.Port
@@ -93,16 +95,25 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Async agent deployment
 		cmds = append(cmds, func() tea.Msg {
-			out, err := r.sshClient.DeployAndRunAgent()
+			_, err := r.sshClient.DeployAndRunAgent()
 			if err != nil {
-				return fmt.Errorf("Deployment failed: %v", err)
+				// deployment failed but we still init engines
 			}
-			var payload agent.Payload
-			if err := json.Unmarshal(out, &payload); err != nil {
-				return fmt.Errorf("JSON Parse failed: %v", err)
-			}
-			return payload
+			return pages.EngineReadyMsg{Client: msg.Client}
 		})
+
+	case pages.EngineReadyMsg:
+		// Broadcast to all pages to init engines
+		for i, p := range r.pages {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
+		// Queue first payload fetch
+		cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
 
 	case tea.WindowSizeMsg:
 		r.width = msg.Width
@@ -116,29 +127,25 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, nil
 
 	case agent.Payload:
+		// Send the payload to all pages for rendering
+		for i, p := range r.pages {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
 		// Queue next tick when we successfully receive a payload
-		cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-			return agentTick(t)
-		}))
+		cmds = append(cmds, sysengine.Tick(5*time.Second))
 
-	case agentTick:
-		if r.sshClient != nil {
-			cmds = append(cmds, func() tea.Msg {
-				out, err := r.sshClient.Run("/tmp/vortex-agent payload")
-				if err != nil {
-					return nil // Ignore momentary network drops
-				}
-				var payload agent.Payload
-				json.Unmarshal([]byte(out), &payload)
+	case agent.PayloadErrorMsg:
+		// If payload fails, wait a bit longer then try again
+		cmds = append(cmds, sysengine.Tick(10*time.Second))
 
-				// Fetch live logs only if the Logs tab is active
-				if r.activeIdx == 5 {
-					logsOut := r.sshClient.RunCommand("journalctl -n 25 --no-pager")
-					payload.Logs = logsOut
-				}
-
-				return payload
-			})
+	case agent.TickMsg:
+		if r.sysEngine != nil {
+			cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
 		}
 
 	case terminal.OpenShellMsg:
@@ -229,10 +236,13 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Broadcast non-KeyMsgs to all pages
 	for i, p := range r.pages {
-		updatedModel, cmd := p.Update(msg)
-		r.pages[i] = updatedModel.(pages.Page)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
+		// Do not double-broadcast agent.Payload as it was handled specifically above
+		if _, isPayload := msg.(agent.Payload); !isPayload {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 
@@ -360,13 +370,11 @@ func (r Router) View() string {
 	return layout
 }
 
-type agentTick time.Time
-
 func main() {
 	p := tea.NewProgram(initialModel())
 
 	if _, err := p.Run(); err != nil {
-		fmt.Println(err)
+		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
 }
