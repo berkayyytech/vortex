@@ -24,6 +24,7 @@ import (
 	"os/exec"
 
 	"main/internal/agent"
+	"main/internal/components"
 	sysengine "main/internal/engine/system"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
@@ -38,17 +39,17 @@ type Router struct {
 	activeHost string
 	activeUser string
 	activePort string
+	toast      components.Toast
+	palette    components.Palette
 
 	width  int
 	height int
-
-	paletteActive bool
-	paletteCursor int
-	paletteItems  []string
 }
 
+type switchTabMsg struct{ idx int }
+
 func initialModel() Router {
-	return Router{
+	r := Router{
 		pages: []pages.Page{
 			servers.New(),
 			dashboard.New(),
@@ -64,14 +65,39 @@ func initialModel() Router {
 		},
 		sidebarIdx: 0,
 		activeIdx:  0,
-		paletteItems: []string{
-			"Restart Docker Engine",
-			"Restart Nginx",
-			"Clear System Cache",
-			"Reboot Server",
-			"Disconnect SSH",
-		},
 	}
+
+	r.palette = components.NewPalette()
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Dashboard",
+		Description: "Switch to the dashboard view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 1} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Docker",
+		Description: "Switch to the Docker management view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 3} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Apps",
+		Description: "Switch to the Application Manager view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 2} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Exit Vortex",
+		Description: "Quit the application",
+		Action: func() tea.Cmd {
+			return tea.Quit
+		},
+	})
+
+	return r
 }
 
 func (r Router) Init() tea.Cmd {
@@ -145,6 +171,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case agent.PayloadErrorMsg:
 		// If payload fails, wait a bit longer then try again
+		r.toast = components.NewToast("System Telemetry Disconnected", "error", 3*time.Second)
 		cmds = append(cmds, sysengine.Tick(10*time.Second))
 
 	case agent.TickMsg:
@@ -176,35 +203,23 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 
+	case switchTabMsg:
+		r.sidebarIdx = msg.idx
+		r.activeIdx = msg.idx
+
 	case tea.KeyMsg:
-		if r.paletteActive {
-			switch msg.String() {
-			case "esc", "ctrl+p":
-				r.paletteActive = false
-			case "up", "k":
-				if r.paletteCursor > 0 {
-					r.paletteCursor--
-				}
-			case "down", "j":
-				if r.paletteCursor < len(r.paletteItems)-1 {
-					r.paletteCursor++
-				}
-			case "enter":
-				// Placeholder: Execute selected command
-				r.paletteActive = false
-				if r.sshClient != nil && r.paletteCursor == 0 {
-					// Example: Restart docker
-					r.sshClient.RunCommand("systemctl restart docker")
-				}
-			}
-			return r, nil
+		if r.palette.Active {
+			var cmd tea.Cmd
+			r.palette, cmd = r.palette.Update(msg)
+			return r, cmd
 		}
 
 		switch msg.String() {
 		case "ctrl+c":
 			return r, tea.Quit
 		case "ctrl+p":
-			r.paletteActive = true
+			r.palette.Active = !r.palette.Active
+			r.palette.Update(msg)
 			return r, nil
 		case "shift+up", "[":
 			if r.sidebarIdx > 0 {
@@ -226,7 +241,6 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.activeIdx = r.sidebarIdx
 				return r, nil
 			}
-			// If they are the same, let the active page handle "enter" (e.g. connecting to a server)
 		}
 
 		// Strictly pass all other KeyMsgs to the active page only
@@ -342,36 +356,20 @@ func (r Router) View() string {
 	// Combine Sidebar and Content horizontally
 	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 
-	// Render Command Palette Overlay if active
-	if r.paletteActive {
-		paletteBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
-			Padding(1, 4).
-			Background(lipgloss.Color("236"))
-
-		var pItems string
-		for i, item := range r.paletteItems {
-			if i == r.paletteCursor {
-				pItems += lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("▶ "+item) + "\n"
-			} else {
-				pItems += "  " + item + "\n"
-			}
-		}
-
-		overlay := paletteBox.Render(
-			lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("COMMAND PALETTE (Ctrl+P)") + "\n\n" +
-				pItems,
-		)
-
-		// Place overlay roughly in the center over the layout
-		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, overlay)
-	} else if r.width > 0 && r.height > 0 {
-		// Perfectly center the main UI layout in the terminal window
-		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
+	// Overlay Toast if active
+	r.toast.Update()
+	if r.toast.Active {
+		layout = lipgloss.JoinVertical(lipgloss.Center, layout, r.toast.View())
 	}
 
-	return layout
+	// Overlay Command Palette if active
+	if r.palette.Active {
+		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center,
+			lipgloss.JoinVertical(lipgloss.Center, layout, "\n", r.palette.View()),
+		)
+	}
+
+	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
 }
 
 func main() {
