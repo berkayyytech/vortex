@@ -6,36 +6,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"main/internal/config"
 	sshlib "main/internal/ssh"
 )
 
-// ServerConfig holds the connection details for a remote VPS
-type ServerConfig struct {
-	Name     string
-	Host     string
-	Port     string
-	User     string
-	Password string
-	KeyPath  string
-}
-
 // Model holds the state for the Server Manager page
 type Model struct {
-	servers []ServerConfig
+	servers []config.ServerConfig
 	cursor  int
 	status  string
 	client  *sshlib.Client
 }
 
 func New() Model {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		cfg.Servers = []config.ServerConfig{{Name: fmt.Sprintf("Error loading config: %v", err)}}
+	}
+
 	return Model{
-		servers: []ServerConfig{
-			{Name: "Localhost (Agent Mode)", Host: "127.0.0.1", Port: "22", User: "root", Password: "password"},
-			{Name: "Production Web", Host: "192.168.1.100", Port: "22", User: "admin", KeyPath: "~/.ssh/id_rsa"},
-			{Name: "Database Cluster", Host: "10.0.0.5", Port: "22", User: "root", KeyPath: "~/.ssh/id_ed25519"},
-		},
-		cursor: 0,
-		status: "Select a server to connect",
+		servers: cfg.Servers,
+		cursor:  0,
+		status:  "Select a server (Up/Down arrows, Enter to connect)",
 	}
 }
 

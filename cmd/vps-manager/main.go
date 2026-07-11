@@ -163,18 +163,33 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, tea.Quit
 		case "ctrl+p":
 			r.paletteActive = true
-		case "up", "k":
-			if r.cursor > 0 {
-				r.cursor--
-			}
-		case "down", "j":
+			return r, nil
+		case "tab", "right", "l":
 			if r.cursor < len(r.pages)-1 {
 				r.cursor++
+			} else {
+				r.cursor = 0
 			}
+			return r, nil
+		case "shift+tab", "left", "h":
+			if r.cursor > 0 {
+				r.cursor--
+			} else {
+				r.cursor = len(r.pages)-1
+			}
+			return r, nil
 		}
+
+		// Strictly pass all other KeyMsgs to the active page only
+		updatedModel, cmd := r.pages[r.cursor].Update(msg)
+		r.pages[r.cursor] = updatedModel.(pages.Page)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return r, tea.Batch(cmds...)
 	}
 
-	// Broadcast the message to all pages so they can update their background state
+	// Broadcast non-KeyMsgs to all pages
 	for i, p := range r.pages {
 		updatedModel, cmd := p.Update(msg)
 		r.pages[i] = updatedModel.(pages.Page)

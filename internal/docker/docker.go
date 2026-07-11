@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"os/exec"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -32,6 +33,17 @@ func GetDockerStats() DockerStats {
 	defer cli.Close()
 
 	ctx := context.Background()
+
+	// Ping daemon to ensure it is actually running before we query endpoints
+	if _, err := cli.Ping(ctx); err != nil {
+		// Differentiate between "not installed/running" and "permission denied"
+		if errCli := exec.Command("docker", "info").Run(); errCli != nil {
+			stats.Status = "Docker is not installed or not running"
+		} else {
+			stats.Status = "Permission Denied (User not in 'docker' group?)"
+		}
+		return stats
+	}
 
 	// Containers
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
