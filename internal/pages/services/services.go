@@ -8,7 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/agent"
-	"main/internal/pages"
+	"main/internal/components"
+	sysengine "main/internal/engine/systemd"
+	sshlib "main/internal/ssh"
 	svclib "main/internal/services"
 	"main/internal/theme"
 )
@@ -16,6 +18,7 @@ import (
 type Model struct {
 	servicesList []svclib.Service
 	cursor       int
+	engine       *sysengine.Engine
 }
 
 func New() Model {
@@ -37,18 +40,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 		case "r", "R":
-			if len(m.servicesList) > 0 {
+			if len(m.servicesList) > 0 && m.engine != nil {
 				return m, func() tea.Msg {
-					return pages.RunRemoteCmdMsg{Command: "sudo systemctl restart " + m.servicesList[m.cursor].Name}
+					m.engine.RestartService(m.servicesList[m.cursor].Name)
+					return nil
 				}
 			}
 		case "s", "S":
-			if len(m.servicesList) > 0 {
+			if len(m.servicesList) > 0 && m.engine != nil {
 				return m, func() tea.Msg {
-					return pages.RunRemoteCmdMsg{Command: "sudo systemctl stop " + m.servicesList[m.cursor].Name}
+					m.engine.StopService(m.servicesList[m.cursor].Name)
+					return nil
 				}
 			}
 		}
+
+	case sshlib.ConnectedMsg:
+		m.engine = sysengine.NewEngine(msg.Client)
+		return m, nil
 
 	case agent.Payload:
 		m.servicesList = msg.Services
@@ -58,17 +67,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(theme.Current.Dim).
-		Padding(1, 3).
-		Margin(1, 0)
-
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(theme.Current.Accent).
-		MarginBottom(1)
-
 	var items string
 	if len(m.servicesList) == 0 {
 		items = "No active services found."
@@ -93,13 +91,13 @@ func (m Model) View() string {
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [R] Restart Service  [S] Stop Service")
 
-	return card.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			titleCard.Render("SYSTEMD SERVICES"),
-			items,
-			controls,
-		),
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		components.Title("SYSTEMD SERVICES"),
+		items,
+		controls,
 	)
+
+	return components.Card(content, 60)
 }
 
 func (m Model) Title() string { return "Services" }

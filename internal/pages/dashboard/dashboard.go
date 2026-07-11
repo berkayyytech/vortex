@@ -10,7 +10,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/agent"
+	"main/internal/components"
 	"main/internal/stats"
+	"main/internal/theme"
 )
 
 // Model holds the state for the Dashboard page.
@@ -54,29 +56,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("240")).
-		Padding(1, 3).
-		Margin(1, 0)
+	labelStyle := lipgloss.NewStyle().Foreground(theme.Current.Text).Width(8)
 
-	titleCard := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("205")).
-		MarginBottom(1)
+	content := strings.Join([]string{
+		components.Title("HARDWARE UTILIZATION"),
+		"",
+		labelStyle.Render("CPU") + " " + components.ProgressBar(m.sysStats.CPUPercent, 30),
+		labelStyle.Render("RAM") + " " + components.ProgressBar(m.sysStats.RAMPercent, 30),
+		labelStyle.Render("Disk") + " " + components.ProgressBar(m.sysStats.DiskPercent, 30),
+		"",
+		components.Title("SYSTEM INFORMATION"),
+		"",
+		fmt.Sprintf("%s %s", labelStyle.Render("Uptime"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Uptime)),
+		fmt.Sprintf("%s %s", labelStyle.Render("OS"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.OS)),
+		fmt.Sprintf("%s %s", labelStyle.Render("Kernel"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Kernel)),
+	}, "\n")
 
-	return card.Render(
-		strings.Join([]string{
-			titleCard.Render("HARDWARE UTILIZATION"),
-			fmt.Sprintf("CPU      %s", stats.FormatBar(m.sysStats.CPUPercent)),
-			fmt.Sprintf("RAM      %s", stats.FormatBar(m.sysStats.RAMPercent)),
-			fmt.Sprintf("Disk     %s", stats.FormatBar(m.sysStats.DiskPercent)),
-			"",
-			fmt.Sprintf("Uptime   %s", m.sysStats.Uptime),
-			fmt.Sprintf("OS       %s", m.sysStats.OS),
-			fmt.Sprintf("Kernel   %s", m.sysStats.Kernel),
-		}, "\n"),
-	)
+	return components.Card(content, 60)
 }
 
 func (m Model) Title() string {

@@ -12,56 +12,93 @@ import (
 	"main/internal/pages/docker"
 	"main/internal/pages/files"
 	"main/internal/pages/logs"
-	"main/internal/pages/network"
+	"main/internal/pages/apps"
+	"main/internal/pages/backup"
 	"main/internal/pages/servers"
 	"main/internal/pages/services"
+	"main/internal/pages/security"
 	"main/internal/pages/settings"
 	"main/internal/pages/terminal"
 
-	"encoding/json"
-	"os/exec"
 	"time"
+	"os/exec"
 
 	"main/internal/agent"
+	"main/internal/components"
+	"main/internal/config"
+	sysengine "main/internal/engine/system"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
 
 type Router struct {
-	pages      []pages.Page
-	cursor     int
-	sshClient  *sshlib.Client
+	pages       []pages.Page
+	sidebarIdx  int
+	activeIdx   int
+	sshClient   *sshlib.Client
+	sysEngine   *sysengine.Engine
 	activeHost string
 	activeUser string
 	activePort string
+	toast      components.Toast
+	palette    components.Palette
 
-	paletteActive bool
-	paletteCursor int
-	paletteItems  []string
+	width  int
+	height int
 }
 
+type switchTabMsg struct{ idx int }
+
 func initialModel() Router {
-	return Router{
+	r := Router{
 		pages: []pages.Page{
 			servers.New(),
 			dashboard.New(),
-			network.New(),
+			apps.New(),
 			docker.New(),
 			services.New(),
 			files.New(),
 			logs.New(),
+			security.New(),
+			backup.New(),
 			terminal.New(),
 			settings.New(),
 		},
-		cursor: 0,
-		paletteItems: []string{
-			"Restart Docker Engine",
-			"Restart Nginx",
-			"Clear System Cache",
-			"Reboot Server",
-			"Disconnect SSH",
-		},
+		sidebarIdx: 0,
+		activeIdx:  0,
 	}
+
+	r.palette = components.NewPalette()
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Dashboard",
+		Description: "Switch to the dashboard view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 1} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Docker",
+		Description: "Switch to the Docker management view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 3} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Apps",
+		Description: "Switch to the Application Manager view",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return switchTabMsg{idx: 2} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Exit Vortex",
+		Description: "Quit the application",
+		Action: func() tea.Cmd {
+			return tea.Quit
+		},
+	})
+
+	return r
 }
 
 func (r Router) Init() tea.Cmd {
@@ -80,48 +117,67 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case sshlib.ConnectedMsg:
 		r.sshClient = msg.Client
+		r.sysEngine = sysengine.NewEngine(r.sshClient)
 		r.activeHost = msg.Host
 		r.activeUser = msg.User
 		r.activePort = msg.Port
-		r.cursor = 1 // Auto-switch to Dashboard
+		r.sidebarIdx = 1 // Auto-switch to Dashboard
+		r.activeIdx = 1
 
 		// Async agent deployment
 		cmds = append(cmds, func() tea.Msg {
-			out, err := r.sshClient.DeployAndRunAgent()
+			_, err := r.sshClient.DeployAndRunAgent()
 			if err != nil {
-				return fmt.Errorf("Deployment failed: %v", err)
+				// deployment failed but we still init engines
 			}
-			var payload agent.Payload
-			if err := json.Unmarshal(out, &payload); err != nil {
-				return fmt.Errorf("JSON Parse failed: %v", err)
-			}
-			return payload
+			return pages.EngineReadyMsg{Client: msg.Client}
 		})
 
+	case pages.EngineReadyMsg:
+		// Broadcast to all pages to init engines
+		for i, p := range r.pages {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
+		// Queue first payload fetch
+		cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
+
+	case tea.WindowSizeMsg:
+		r.width = msg.Width
+		r.height = msg.Height
+
+		// Broadcast window resize to all pages
+		for i, p := range r.pages {
+			updatedModel, _ := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+		}
+		return r, nil
+
 	case agent.Payload:
+		// Send the payload to all pages for rendering
+		for i, p := range r.pages {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
 		// Queue next tick when we successfully receive a payload
-		cmds = append(cmds, tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-			return agentTick(t)
-		}))
+		cmds = append(cmds, sysengine.Tick(5*time.Second))
 
-	case agentTick:
-		if r.sshClient != nil {
-			cmds = append(cmds, func() tea.Msg {
-				out, err := r.sshClient.Run("/tmp/vortex-agent payload")
-				if err != nil {
-					return nil // Ignore momentary network drops
-				}
-				var payload agent.Payload
-				json.Unmarshal([]byte(out), &payload)
+	case agent.PayloadErrorMsg:
+		// If payload fails, wait a bit longer then try again
+		r.toast = components.NewToast("System Telemetry Disconnected", "error", 3*time.Second)
+		cmds = append(cmds, sysengine.Tick(10*time.Second))
 
-				// Fetch live logs only if the Logs tab is active
-				if r.cursor == 5 {
-					logsOut := r.sshClient.RunCommand("journalctl -n 25 --no-pager")
-					payload.Logs = logsOut
-				}
-
-				return payload
-			})
+	case agent.TickMsg:
+		if r.sysEngine != nil {
+			cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
 		}
 
 	case terminal.OpenShellMsg:
@@ -148,55 +204,49 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		}
 
+	case switchTabMsg:
+		r.sidebarIdx = msg.idx
+		r.activeIdx = msg.idx
+
 	case tea.KeyMsg:
-		if r.paletteActive {
-			switch msg.String() {
-			case "esc", "ctrl+p":
-				r.paletteActive = false
-			case "up", "k":
-				if r.paletteCursor > 0 {
-					r.paletteCursor--
-				}
-			case "down", "j":
-				if r.paletteCursor < len(r.paletteItems)-1 {
-					r.paletteCursor++
-				}
-			case "enter":
-				// Placeholder: Execute selected command
-				r.paletteActive = false
-				if r.sshClient != nil && r.paletteCursor == 0 {
-					// Example: Restart docker
-					r.sshClient.RunCommand("systemctl restart docker")
-				}
-			}
-			return r, nil
+		if r.palette.Active {
+			var cmd tea.Cmd
+			r.palette, cmd = r.palette.Update(msg)
+			return r, cmd
 		}
 
 		switch msg.String() {
 		case "ctrl+c":
 			return r, tea.Quit
 		case "ctrl+p":
-			r.paletteActive = true
+			r.palette.Active = !r.palette.Active
+			r.palette.Update(msg)
 			return r, nil
-		case "tab":
-			if r.cursor < len(r.pages)-1 {
-				r.cursor++
+		case "shift+up", "[":
+			if r.sidebarIdx > 0 {
+				r.sidebarIdx--
 			} else {
-				r.cursor = 0
+				r.sidebarIdx = len(r.pages) - 1
 			}
 			return r, nil
-		case "shift+tab":
-			if r.cursor > 0 {
-				r.cursor--
+		case "shift+down", "]":
+			if r.sidebarIdx < len(r.pages)-1 {
+				r.sidebarIdx++
 			} else {
-				r.cursor = len(r.pages)-1
+				r.sidebarIdx = 0
 			}
 			return r, nil
+		case "enter":
+			// If sidebar cursor is different from active page, switch to it!
+			if r.activeIdx != r.sidebarIdx {
+				r.activeIdx = r.sidebarIdx
+				return r, nil
+			}
 		}
 
 		// Strictly pass all other KeyMsgs to the active page only
-		updatedModel, cmd := r.pages[r.cursor].Update(msg)
-		r.pages[r.cursor] = updatedModel.(pages.Page)
+		updatedModel, cmd := r.pages[r.activeIdx].Update(msg)
+		r.pages[r.activeIdx] = updatedModel.(pages.Page)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -205,10 +255,13 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Broadcast non-KeyMsgs to all pages
 	for i, p := range r.pages {
-		updatedModel, cmd := p.Update(msg)
-		r.pages[i] = updatedModel.(pages.Page)
-		if cmd != nil {
-			cmds = append(cmds, cmd)
+		// Do not double-broadcast agent.Payload as it was handled specifically above
+		if _, isPayload := msg.(agent.Payload); !isPayload {
+			updatedModel, cmd := p.Update(msg)
+			r.pages[i] = updatedModel.(pages.Page)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 
@@ -216,54 +269,73 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Router) View() string {
-	if r.sshClient == nil && r.cursor != 0 {
-		return "Please select a server first..."
-	}
-
 	accentColor := theme.Current.Accent
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim
 
 	sidebarStyle := lipgloss.NewStyle().
-		Width(24).
+		Width(26).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder(), false, true, false, false).
 		BorderForeground(dimColor)
 
 	contentStyle := lipgloss.NewStyle().
-		Padding(1, 2)
+		Padding(1, 4)
 
+	logo := `
+ █  █ █▀▀█ █▀▀█
+ █  █ █  █ █▄▄▀
+  ▀▀  ▀▀▀▀ ▀ ▀▀
+ V O R T E X
+`
 	title := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(accentColor).
-		Render("VORTEX VPS")
+		Render(logo)
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
-		Foreground(primaryColor)
+		Foreground(primaryColor).
+		Background(theme.Current.HighlightBg).
+		Width(22).
+		PaddingLeft(1)
 
 	normalStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252"))
+		Foreground(theme.Current.Text).
+		Width(22).
+		PaddingLeft(1)
 
 	var items []string
 	items = append(items, title)
 	items = append(items, "")
+	items = append(items, lipgloss.NewStyle().Foreground(dimColor).Render(" MAIN MENU"))
+	items = append(items, lipgloss.NewStyle().Foreground(dimColor).Render(" [ ] to navigate"))
+	items = append(items, "")
 
 	// Dynamically build the sidebar from the registered pages
 	for i, p := range r.pages {
-		label := fmt.Sprintf("%s %s", p.Icon(), p.Title())
-		if i == r.cursor {
-			items = append(items, selectedStyle.Render("▶ "+label))
+		label := fmt.Sprintf("%s  %s", p.Icon(), p.Title())
+		
+		var renderedItem string
+		if i == r.sidebarIdx && i == r.activeIdx {
+			renderedItem = selectedStyle.Render("▌ "+label)
+		} else if i == r.sidebarIdx {
+			// Hovering but not active
+			renderedItem = lipgloss.NewStyle().Foreground(theme.Current.Text).Background(lipgloss.Color("238")).Width(22).PaddingLeft(1).Render("  " + label)
+		} else if i == r.activeIdx {
+			// Active but not hovering
+			renderedItem = lipgloss.NewStyle().Foreground(primaryColor).Width(22).PaddingLeft(1).Render("▌ " + label)
 		} else {
-			items = append(items, normalStyle.Render("  "+label))
+			renderedItem = normalStyle.Render("  "+label)
 		}
+		items = append(items, renderedItem)
 	}
 
 	menu := lipgloss.JoinVertical(lipgloss.Left, items...)
 	sidebar := sidebarStyle.Render(menu)
 
 	// Render the active page
-	activePage := r.pages[r.cursor]
+	activePage := r.pages[r.activeIdx]
 	
 	header := lipgloss.NewStyle().
 		Bold(true).
@@ -271,54 +343,44 @@ func (r Router) View() string {
 		Foreground(primaryColor).
 		Render(activePage.Title())
 
+	var pageView string
+	if r.sshClient == nil && r.activeIdx != 0 {
+		pageView = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("❌ Please connect to a server in the 'Servers' tab first.")
+	} else {
+		pageView = activePage.View()
+	}
+
 	content := contentStyle.Render(
-		header + "\n" + activePage.View(),
+		header + "\n\n" + pageView,
 	)
 
-	// Render Command Palette Overlay
-	if r.paletteActive {
-		paletteBox := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accentColor).
-			Padding(1, 4).
-			Background(lipgloss.Color("236"))
+	// Combine Sidebar and Content horizontally
+	layout := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, content)
 
-		var pItems string
-		for i, item := range r.paletteItems {
-			if i == r.paletteCursor {
-				pItems += lipgloss.NewStyle().Foreground(primaryColor).Bold(true).Render("▶ "+item) + "\n"
-			} else {
-				pItems += "  " + item + "\n"
-			}
-		}
+	// Overlay Toast if active
+	r.toast.Update()
+	if r.toast.Active {
+		layout = lipgloss.JoinVertical(lipgloss.Center, layout, r.toast.View())
+	}
 
-		overlay := paletteBox.Render(
-			lipgloss.NewStyle().Bold(true).Foreground(accentColor).Render("COMMAND PALETTE (Ctrl+P)") + "\n\n" +
-				pItems,
-		)
-
-		// Place overlay roughly in the center
-		content = lipgloss.Place(
-			60, 20,
-			lipgloss.Center, lipgloss.Center,
-			overlay,
+	// Overlay Command Palette if active
+	if r.palette.Active {
+		layout = lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center,
+			lipgloss.JoinVertical(lipgloss.Center, layout, "\n", r.palette.View()),
 		)
 	}
 
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		sidebar,
-		content,
-	)
+	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
 }
 
-type agentTick time.Time
-
 func main() {
+	config.InitDefaults()
+	config.LoadSettings()
+
 	p := tea.NewProgram(initialModel())
 
 	if _, err := p.Run(); err != nil {
-		fmt.Println(err)
+		fmt.Printf("Alas, there's been an error: %v", err)
 		os.Exit(1)
 	}
 }

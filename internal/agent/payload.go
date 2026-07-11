@@ -5,6 +5,7 @@ import (
 	"main/internal/network"
 	"main/internal/services"
 	"main/internal/stats"
+	"time"
 )
 
 // Payload represents the combined JSON state returned by the remote vortex-agent.
@@ -16,3 +17,11 @@ type Payload struct {
 	Logs     string              `json:"logs,omitempty"`
 	Files    string              `json:"files,omitempty"`
 }
+
+// PayloadErrorMsg is returned when the system engine fails to fetch the payload
+type PayloadErrorMsg struct {
+	Err error
+}
+
+// TickMsg signals the system engine to poll for the next payload
+type TickMsg time.Time
