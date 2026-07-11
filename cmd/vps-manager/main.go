@@ -13,8 +13,10 @@ import (
 	"main/internal/pages/files"
 	"main/internal/pages/logs"
 	"main/internal/pages/apps"
+	"main/internal/pages/backup"
 	"main/internal/pages/servers"
 	"main/internal/pages/services"
+	"main/internal/pages/security"
 	"main/internal/pages/settings"
 	"main/internal/pages/terminal"
 
@@ -55,6 +57,8 @@ func initialModel() Router {
 			services.New(),
 			files.New(),
 			logs.New(),
+			security.New(),
+			backup.New(),
 			terminal.New(),
 			settings.New(),
 		},
