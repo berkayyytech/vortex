@@ -98,7 +98,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	var items string
-	for i, f := range m.files {
+	
+	start := 0
+	maxLines := 15
+	if m.cursor > maxLines/2 {
+		start = m.cursor - maxLines/2
+	}
+	end := start + maxLines
+	if end > len(m.files) {
+		end = len(m.files)
+		start = end - maxLines
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	for i := start; i < end; i++ {
+		f := m.files[i]
 		if f == "" {
 			continue
 		}

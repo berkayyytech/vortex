@@ -14,6 +14,10 @@ import (
 	sshlib "main/internal/ssh"
 )
 
+type OpenDockerShellMsg struct {
+	ContainerID string
+}
+
 type Model struct {
 	dockerStats docklib.DockerStats
 	cursor      int
@@ -40,6 +44,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.cursor < len(m.dockerStats.ContainersList)-1 {
 				m.cursor++
+			}
+		case "enter":
+			if len(m.dockerStats.ContainersList) > 0 {
+				c := m.dockerStats.ContainersList[m.cursor]
+				return m, func() tea.Msg { return OpenDockerShellMsg{ContainerID: c.ID} }
 			}
 		case "r", "R":
 			if len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
@@ -104,7 +113,7 @@ func (m Model) View() string {
 		}
 	}
 
-	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [R] Restart Container  [S] Stop Container")
+	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [Enter] Connect  [R] Restart  [S] Stop")
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		components.Title("DOCKER ENGINE"),

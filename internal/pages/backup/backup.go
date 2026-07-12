@@ -78,6 +78,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return backupCompleteMsg{job: job, err: err}
 				}
 			}
+		case "l", "L":
+			if len(m.jobs) > 0 && m.engine != nil {
+				job := m.jobs[m.cursor]
+				m.status = "Restoring " + job.ID + "..."
+				return m, func() tea.Msg {
+					err := m.engine.RestoreBackup(job.ID)
+					if err != nil {
+						return backupCompleteMsg{job: &job, err: fmt.Errorf("Restore Failed: %v", err)}
+					}
+					return backupCompleteMsg{job: &job, err: nil} // We misuse CompleteMsg for restore success message
+				}
+			}
+		case "d", "D":
+			if len(m.jobs) > 0 && m.engine != nil {
+				job := m.jobs[m.cursor]
+				m.status = "Deleting " + job.ID + "..."
+				return m, func() tea.Msg {
+					m.engine.DeleteBackup(job.ID)
+					// refresh after delete
+					return fetchBackups(m.engine)()
+				}
+			}
 		case "r", "R":
 			m.status = "Scanning for backups..."
 			return m, fetchBackups(m.engine)
@@ -96,7 +118,22 @@ func (m Model) View() string {
 	if m.jobs == nil || len(m.jobs) == 0 {
 		items = "No backups found in /tmp."
 	} else {
-		for i, job := range m.jobs {
+		start := 0
+		maxLines := 15
+		if m.cursor > maxLines/2 {
+			start = m.cursor - maxLines/2
+		}
+		end := start + maxLines
+		if end > len(m.jobs) {
+			end = len(m.jobs)
+			start = end - maxLines
+			if start < 0 {
+				start = 0
+			}
+		}
+
+		for i := start; i < end; i++ {
+			job := m.jobs[i]
 			cursor := "  "
 			style := lipgloss.NewStyle().Foreground(theme.Current.Text)
 			if m.cursor == i {
@@ -109,7 +146,7 @@ func (m Model) View() string {
 		}
 	}
 
-	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [B] Trigger Test Backup (/etc)  [R] Refresh")
+	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [B] Trigger Backup  [L] Load  [D] Delete  [R] Refresh")
 	statusBlock := lipgloss.NewStyle().Foreground(theme.Current.Primary).Render("\nStatus: " + m.status)
 
 	content := lipgloss.JoinVertical(lipgloss.Left,

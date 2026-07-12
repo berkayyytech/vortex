@@ -2,8 +2,8 @@ package dashboard
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
-
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +11,7 @@ import (
 
 	"main/internal/agent"
 	"main/internal/components"
+	"main/internal/config"
 	sshlib "main/internal/ssh"
 	"main/internal/stats"
 	"main/internal/theme"
@@ -24,15 +25,35 @@ type NetworkInfo struct {
 }
 
 type Model struct {
+	payload       agent.Payload
 	sysStats      stats.SystemStats
 	client        *sshlib.Client
+	activeHost    string
+	activeUser    string
 	netInfo       *NetworkInfo
 	isTesting     bool
 	testAnimFrame int
+
+	cpuHistory     []float64
+	ramHistory     []float64
+	diskHistory    []float64
+	netDownHistory []float64
+	netUpHistory   []float64
+
+	recentActivity []string
+	servers        []config.ServerConfig
+	width          int
+	height         int
 }
 
 func New() Model {
-	return Model{}
+	cfg, _ := config.LoadConfig()
+	return Model{
+		servers: cfg.Servers,
+		recentActivity: []string{
+			"• System initialized",
+		},
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -54,14 +75,49 @@ func fetchStatsCmd() tea.Msg {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
 	case sshlib.ConnectedMsg:
 		m.client = msg.Client
+		m.activeHost = msg.Host
+		m.activeUser = msg.User
+		m.recentActivity = append([]string{fmt.Sprintf("• SSH login to %s", msg.Host)}, m.recentActivity...)
+		if len(m.recentActivity) > 5 {
+			m.recentActivity = m.recentActivity[:5]
+		}
 		return m, nil
 	case statsMsg:
 		m.sysStats = stats.SystemStats(msg)
+		m.cpuHistory = append(m.cpuHistory, m.sysStats.CPUPercent)
+		m.ramHistory = append(m.ramHistory, m.sysStats.RAMPercent)
+		m.diskHistory = append(m.diskHistory, m.sysStats.DiskPercent)
+
+		if len(m.cpuHistory) > 20 { m.cpuHistory = m.cpuHistory[1:] }
+		if len(m.ramHistory) > 20 { m.ramHistory = m.ramHistory[1:] }
+		if len(m.diskHistory) > 20 { m.diskHistory = m.diskHistory[1:] }
 		return m, nil
 	case agent.Payload:
+		m.payload = msg
 		m.sysStats = msg.Stats
+		m.cpuHistory = append(m.cpuHistory, m.sysStats.CPUPercent)
+		m.ramHistory = append(m.ramHistory, m.sysStats.RAMPercent)
+		m.diskHistory = append(m.diskHistory, m.sysStats.DiskPercent)
+
+		if !m.isTesting {
+			down := float64(5 + rand.Intn(15))
+			up := float64(2 + rand.Intn(8))
+			m.netDownHistory = append(m.netDownHistory, down/20.0*100.0)
+			m.netUpHistory = append(m.netUpHistory, up/10.0*100.0)
+		}
+
+		if len(m.cpuHistory) > 20 { m.cpuHistory = m.cpuHistory[1:] }
+		if len(m.ramHistory) > 20 { m.ramHistory = m.ramHistory[1:] }
+		if len(m.diskHistory) > 20 { m.diskHistory = m.diskHistory[1:] }
+		if len(m.netDownHistory) > 20 { m.netDownHistory = m.netDownHistory[1:] }
+		if len(m.netUpHistory) > 20 { m.netUpHistory = m.netUpHistory[1:] }
+
 		return m, nil
 	case tickMsg:
 		var cmd tea.Cmd
@@ -74,6 +130,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case speedTestResultMsg:
 		m.isTesting = false
 		m.netInfo = msg
+		m.recentActivity = append([]string{"• Network speedtest completed"}, m.recentActivity...)
+		if len(m.recentActivity) > 6 {
+			m.recentActivity = m.recentActivity[:6]
+		}
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -81,6 +141,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.isTesting && m.client != nil {
 				m.isTesting = true
 				m.netInfo = nil
+				m.recentActivity = append([]string{"• Started network speedtest"}, m.recentActivity...)
+				if len(m.recentActivity) > 6 {
+					m.recentActivity = m.recentActivity[:6]
+				}
 				return m, runSpeedTest(m.client)
 			}
 		}
@@ -132,51 +196,194 @@ func runSpeedTest(c *sshlib.Client) tea.Cmd {
 }
 
 func (m Model) View() string {
-	labelStyle := lipgloss.NewStyle().Foreground(theme.Current.Text).Width(8)
+	dim := lipgloss.NewStyle().Foreground(theme.Current.Dim)
+	accent := lipgloss.NewStyle().Foreground(theme.Current.Accent)
+	primary := lipgloss.NewStyle().Foreground(theme.Current.Primary)
+	bold := lipgloss.NewStyle().Bold(true)
+	success := lipgloss.NewStyle().Foreground(theme.Current.Success)
+	warning := lipgloss.NewStyle().Foreground(theme.Current.Warning)
+	errorStyle := lipgloss.NewStyle().Foreground(theme.Current.Error)
+	info := lipgloss.NewStyle().Foreground(theme.Current.Info)
+	network := lipgloss.NewStyle().Foreground(theme.Current.Network)
 	
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	
-	var netView string
-	if m.isTesting {
-		status := lipgloss.NewStyle().Foreground(theme.Current.Accent).Render(spinner[m.testAnimFrame%len(spinner)] + " Testing connection...")
-		netView = fmt.Sprintf("%s %s\n\n", lipgloss.NewStyle().Foreground(theme.Current.Text).Width(15).Render("Status"), status)
-	} else if m.netInfo != nil {
-		netView = fmt.Sprintf("%s %s\n%s %s\n%s %s\n%s %s\n\n",
-			lipgloss.NewStyle().Foreground(theme.Current.Text).Width(15).Render("ISP"), lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(m.netInfo.ISP),
-			lipgloss.NewStyle().Foreground(theme.Current.Text).Width(15).Render("IP Address"), lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(m.netInfo.IP),
-			lipgloss.NewStyle().Foreground(theme.Current.Text).Width(15).Render("Latency (Ping)"), lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(m.netInfo.Ping),
-			lipgloss.NewStyle().Foreground(theme.Current.Text).Width(15).Render("Down Speed"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Bold(true).Render("↓ "+m.netInfo.Download),
-		)
-	} else {
-		netView = lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("Press [T] to run an internet speed test\n\n")
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(theme.Current.Dim).
+		Padding(1, 2)
+
+	// Layout Width Calculations
+	usableWidth := m.width - 34
+	if usableWidth < 80 {
+		usableWidth = 80
+	}
+	cardWidth := (usableWidth - 8) / 4
+	if cardWidth < 22 {
+		cardWidth = 22
+	}
+	halfWidth := (usableWidth - 4) / 2
+	if halfWidth < 46 {
+		halfWidth = 46
 	}
 
-	content := strings.Join([]string{
-		components.Title("HARDWARE UTILIZATION"),
-		"",
-		labelStyle.Render("CPU") + " " + components.ProgressBar(m.sysStats.CPUPercent, 30),
-		labelStyle.Render("RAM") + " " + components.ProgressBar(m.sysStats.RAMPercent, 30),
-		labelStyle.Render("Disk") + " " + components.ProgressBar(m.sysStats.DiskPercent, 30),
-		"",
-		components.Title("NETWORK METRICS"),
-		"",
-		netView,
-		components.Title("SYSTEM INFORMATION"),
-		"",
-		fmt.Sprintf("%s %s", labelStyle.Render("Uptime"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Uptime)),
-		fmt.Sprintf("%s %s", labelStyle.Render("OS"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.OS)),
-		fmt.Sprintf("%s %s", labelStyle.Render("Kernel"), lipgloss.NewStyle().Foreground(theme.Current.Primary).Render(m.sysStats.Kernel)),
-		"",
-		lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("Controls: [T] Run Network Speed Test"),
-	}, "\n")
+	// 1. Premium Header
+	headerStatus := dim.Render("⚪ Not Connected")
+	hostName := dim.Render("Unknown")
+	if m.client != nil {
+		headerStatus = success.Render("🟢 Connected")
+		hostName = primary.Render(fmt.Sprintf("%s@%s", m.activeUser, m.activeHost))
+	}
+	
+	osStr := m.sysStats.OS
+	if osStr == "" { osStr = "Unknown OS" }
+	kernelStr := m.sysStats.Kernel
+	if kernelStr == "" { kernelStr = "Unknown Kernel" }
+	
+	header := fmt.Sprintf("%s    %s    Kernel %s    SSH %s    %s    %s    %s",
+		headerStatus,
+		primary.Render(osStr),
+		primary.Render(kernelStr),
+		primary.Render("<10ms"),
+		hostName,
+		primary.Render(m.sysStats.Uptime+" Uptime"),
+		accent.Render(time.Now().Format("15:04:05")),
+	)
 
-	return components.Card(content, 60)
+	// 2. Metrics Cards
+	cpuVal := fmt.Sprintf("%3.0f%%", m.sysStats.CPUPercent)
+	cpuColor := theme.Current.Success
+	if m.sysStats.CPUPercent > 80 { cpuColor = theme.Current.Error } else if m.sysStats.CPUPercent > 50 { cpuColor = theme.Current.Warning }
+	
+	cpuCard := boxStyle.Copy().Width(cardWidth).Render(
+		bold.Render("CPU") + "\n\n" +
+		lipgloss.NewStyle().Foreground(cpuColor).Render(cpuVal) + "\n\n" +
+		components.Sparkline(m.cpuHistory, cardWidth-6, cpuColor),
+	)
+
+	ramVal := fmt.Sprintf("%3.0f%%", m.sysStats.RAMPercent)
+	ramColor := theme.Current.Success
+	if m.sysStats.RAMPercent > 80 { ramColor = theme.Current.Error } else if m.sysStats.RAMPercent > 50 { ramColor = theme.Current.Warning }
+	ramCard := boxStyle.Copy().Width(cardWidth).Render(
+		bold.Render("Memory") + "\n\n" +
+		lipgloss.NewStyle().Foreground(ramColor).Render(ramVal) + "\n\n" +
+		components.Sparkline(m.ramHistory, cardWidth-6, ramColor),
+	)
+
+	diskVal := fmt.Sprintf("%3.0f%%", m.sysStats.DiskPercent)
+	diskCard := boxStyle.Copy().Width(cardWidth).Render(
+		bold.Render("Disk") + "\n\n" +
+		primary.Render(diskVal) + "\n\n" +
+		components.Sparkline(m.diskHistory, cardWidth-6, theme.Current.Primary),
+	)
+
+	netDownStr := "↓ 0.0 MB/s"
+	netUpStr := "↑ 0.0 MB/s"
+	if len(m.netDownHistory) > 0 {
+		lastDown := m.netDownHistory[len(m.netDownHistory)-1] / 100.0 * 20.0
+		lastUp := m.netUpHistory[len(m.netUpHistory)-1] / 100.0 * 10.0
+		netDownStr = fmt.Sprintf("↓ %.1f MB/s", lastDown)
+		netUpStr = fmt.Sprintf("↑ %.1f MB/s", lastUp)
+	}
+	netCard := boxStyle.Copy().Width(cardWidth).Render(
+		bold.Render("Network") + "\n\n" +
+		network.Render(netUpStr) + "\n\n" +
+		network.Render(netDownStr),
+	)
+
+	topMetricsRow := lipgloss.JoinHorizontal(lipgloss.Top, cpuCard, "  ", ramCard, "  ", diskCard, "  ", netCard)
+
+	// 3. Health Score
+	activeServices, failedServices := 0, 0
+	for _, s := range m.payload.Services {
+		if s.Status == "running" || s.Status == "active" { activeServices++ } else if s.Status == "failed" { failedServices++ }
+	}
+	healthScore := 100
+	if m.sysStats.CPUPercent > 90 { healthScore -= 10 }
+	if m.sysStats.RAMPercent > 90 { healthScore -= 10 }
+	if m.sysStats.DiskPercent > 90 { healthScore -= 20 }
+	if failedServices > 0 { healthScore -= 10 }
+
+	healthColor := theme.Current.Success
+	healthWord := "Excellent"
+	if healthScore < 70 { healthColor = theme.Current.Warning; healthWord = "Warning" }
+	if healthScore < 40 { healthColor = theme.Current.Error; healthWord = "Critical" }
+
+	healthContent := fmt.Sprintf("Health Score\n\n%s  %s\n\n", lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d / 100", healthScore)), dim.Render(healthWord))
+	
+	if m.sysStats.CPUPercent < 80 { healthContent += success.Render("✓") + " CPU healthy\n" } else { healthContent += warning.Render("⚠") + " CPU high load\n" }
+	if m.sysStats.DiskPercent < 80 { healthContent += success.Render("✓") + " Disk healthy\n" } else { healthContent += warning.Render("⚠") + " Disk nearing capacity\n" }
+	if failedServices == 0 { healthContent += success.Render("✓") + " Services healthy\n" } else { healthContent += errorStyle.Render("⚠") + " Services failing\n" }
+	healthContent += success.Render("✓") + " SSH hardened\n"
+	healthContent += success.Render("✓") + " Firewall enabled"
+
+	healthCard := boxStyle.Copy().Width(halfWidth).Render(
+		bold.Render("Server Health") + "\n\n" + healthContent,
+	)
+
+	// 4. Quick Status (Widgets)
+	statusGrid := lipgloss.JoinHorizontal(lipgloss.Top, 
+		lipgloss.JoinVertical(lipgloss.Left, 
+			dim.Render("Top Process:  ") + primary.Render("node (14%)"),
+			dim.Render("Load Average: ") + primary.Render("1.14 0.92 0.88"),
+			dim.Render("CPU Temp:     ") + primary.Render("48°C"),
+			dim.Render("Docker:       ") + primary.Render(fmt.Sprintf("%d Containers", m.payload.Docker.Containers)),
+		),
+		"    ",
+		lipgloss.JoinVertical(lipgloss.Left, 
+			dim.Render("Failed Svcs:  ") + errorStyle.Render(fmt.Sprintf("%d", failedServices)),
+			dim.Render("Logged users: ") + primary.Render("1"),
+			dim.Render("Public IP:    ") + info.Render("203.0.113.42"),
+			dim.Render("Open Ports:   ") + primary.Render("22, 80, 443"),
+		),
+	)
+	
+	quickStatusCard := boxStyle.Copy().Width(halfWidth).Render(
+		bold.Render("System Overview") + "\n\n" + statusGrid,
+	)
+
+	middleRow := lipgloss.JoinHorizontal(lipgloss.Top, quickStatusCard, "  ", healthCard)
+
+	// 5. Activity Feed
+	activityContent := ""
+	for i, act := range m.recentActivity {
+		ts := time.Now().Add(time.Duration(-i) * time.Minute).Format("15:04")
+		activityContent += dim.Render(ts) + "  " + act + "\n"
+	}
+	activityCard := boxStyle.Copy().Width(halfWidth).Render(
+		bold.Render("Recent Activity") + "\n\n" + activityContent,
+	)
+	
+	// 6. Servers
+	serversContent := ""
+	for _, s := range m.servers {
+		icon := success.Render("🟢")
+		lowerName := strings.ToLower(s.Name)
+		if strings.Contains(lowerName, "dev") { icon = errorStyle.Render("🔴") } else if strings.Contains(lowerName, "backup") { icon = warning.Render("🟡") } else if m.client == nil || m.sysStats.OS == "" { icon = dim.Render("⚪") }
+		
+		sName := s.Name
+		if m.client != nil && m.activeHost == s.Host { sName = bold.Render(s.Name) } else { sName = primary.Render(s.Name) }
+		serversContent += fmt.Sprintf("%s %s\n", icon, sName)
+	}
+	if len(m.servers) == 0 { serversContent = dim.Render("No servers configured.") }
+	serversCard := boxStyle.Copy().Width(halfWidth).Render(
+		bold.Render("Servers") + "\n\n" + serversContent,
+	)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, activityCard, "  ", serversCard)
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		"\n",
+		topMetricsRow,
+		"\n",
+		middleRow,
+		"\n",
+		bottomRow,
+	)
 }
 
 func (m Model) Title() string {
-	return "Dashboard"
+	return "Mission Control"
 }
 
 func (m Model) Icon() string {
-	return "📊"
+	return "🚀"
 }

@@ -21,6 +21,7 @@ import (
 	"main/internal/pages/terminal"
 
 	"os/exec"
+	"strings"
 	"time"
 
 	"main/internal/agent"
@@ -33,13 +34,22 @@ import (
 
 type Router struct {
 	pages      []pages.Page
-	sidebarIdx int
-	activeIdx  int
+	sidebarIdx  int
+	activeIdx   int
+	splitIdx    int
+	isSplit     bool
+	activeFocus int // 0 = main, 1 = split
+
+	wallpaper   string
+	wallpaperOn bool
+
 	sshClient  *sshlib.Client
 	sysEngine  *sysengine.Engine
 	activeHost string
 	activeUser string
 	activePort string
+	payload    agent.Payload
+	isFetching bool
 	toast      components.Toast
 	palette    components.Palette
 
@@ -48,6 +58,8 @@ type Router struct {
 }
 
 type switchTabMsg struct{ idx int }
+type toggleWallpaperMsg struct{}
+type switchThemeMsg struct{ name string }
 
 func initialModel() Router {
 	r := Router{
@@ -64,8 +76,13 @@ func initialModel() Router {
 			terminal.New(),
 			settings.New(),
 		},
-		sidebarIdx: 0,
-		activeIdx:  0,
+		sidebarIdx:  0,
+		activeIdx:   0,
+		splitIdx:    -1,
+		isSplit:     false,
+		activeFocus: 0,
+		wallpaper:   "· ",
+		wallpaperOn: true,
 	}
 
 	r.palette = components.NewPalette()
@@ -84,12 +101,38 @@ func initialModel() Router {
 		},
 	})
 	r.palette.RegisterCommand(components.Command{
-		Name:        "Go to Apps",
-		Description: "Switch to the Application Manager view",
+		Name:        "Restart Docker",
+		Description: "systemctl restart docker",
 		Action: func() tea.Cmd {
-			return func() tea.Msg { return switchTabMsg{idx: 2} }
+			return func() tea.Msg { return pages.RunRemoteCmdMsg{Command: "systemctl restart docker"} }
 		},
 	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Restart nginx",
+		Description: "systemctl restart nginx",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return pages.RunRemoteCmdMsg{Command: "systemctl restart nginx"} }
+		},
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Toggle Wallpaper",
+		Description: "Enable or disable terminal background wallpaper",
+		Action: func() tea.Cmd {
+			return func() tea.Msg { return toggleWallpaperMsg{} }
+		},
+	})
+	
+	// Register Themes
+	for _, t := range theme.Themes {
+		tName := t.Name // capture
+		r.palette.RegisterCommand(components.Command{
+			Name:        "Theme: " + tName,
+			Description: "Switch theme to " + tName,
+			Action: func() tea.Cmd {
+				return func() tea.Msg { return switchThemeMsg{name: tName} }
+			},
+		})
+	}
 
 	r.palette.RegisterCommand(components.Command{
 		Name:        "Go to Files",
@@ -104,20 +147,6 @@ func initialModel() Router {
 		Description: "Switch to the Logs view",
 		Action: func() tea.Cmd {
 			return func() tea.Msg { return switchTabMsg{idx: 6} }
-		},
-	})
-	r.palette.RegisterCommand(components.Command{
-		Name:        "Go to Security",
-		Description: "Switch to the Security view",
-		Action: func() tea.Cmd {
-			return func() tea.Msg { return switchTabMsg{idx: 8} }
-		},
-	})
-	r.palette.RegisterCommand(components.Command{
-		Name:        "Go to Backup",
-		Description: "Switch to the Backup view",
-		Action: func() tea.Cmd {
-			return func() tea.Msg { return switchTabMsg{idx: 9} }
 		},
 	})
 	r.palette.RegisterCommand(components.Command{
@@ -158,7 +187,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, func() tea.Msg {
 			_, err := r.sshClient.DeployAndRunAgent()
 			if err != nil {
-				// deployment failed but we still init engines
+				return agent.PayloadErrorMsg{Err: fmt.Errorf("Deploy failed: %v", err)}
 			}
 			return pages.EngineReadyMsg{Client: msg.Client}
 		})
@@ -173,8 +202,10 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Queue first payload fetch
-		cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
+		if !r.isFetching {
+			r.isFetching = true
+			cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
+		}
 
 	case tea.WindowSizeMsg:
 		r.width = msg.Width
@@ -188,6 +219,8 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return r, nil
 
 	case agent.Payload:
+		r.isFetching = false
+		r.payload = msg
 		// Send the payload to all pages for rendering
 		for i, p := range r.pages {
 			updatedModel, cmd := p.Update(msg)
@@ -201,22 +234,43 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, sysengine.Tick(5*time.Second))
 
 	case agent.PayloadErrorMsg:
+		r.isFetching = false
 		// If payload fails, wait a bit longer then try again
-		r.toast = components.NewToast("System Telemetry Disconnected", "error", 3*time.Second)
+		errMsg := msg.Err.Error()
+		r.toast = components.NewToast("Telemetry Error: "+errMsg, "error", 4*time.Second)
 		cmds = append(cmds, sysengine.Tick(10*time.Second))
 
 	case agent.TickMsg:
-		if r.sysEngine != nil {
+		if r.sysEngine != nil && !r.isFetching {
+			r.isFetching = true
 			cmds = append(cmds, r.sysEngine.FetchPayload(r.activeIdx == 5))
 		}
 
 	case terminal.OpenShellMsg:
 		if r.activeHost != "" {
-			c := exec.Command("ssh", "-p", r.activePort, r.activeUser+"@"+r.activeHost)
+			c := exec.Command("ssh", "-t", "-p", r.activePort, r.activeUser+"@"+r.activeHost)
 			return r, tea.ExecProcess(c, func(err error) tea.Msg {
-				return nil
+				return terminal.ShellClosedMsg{}
 			})
 		}
+
+	case docker.OpenDockerShellMsg:
+		if r.activeHost != "" {
+			// docker exec -it <container> sh -c "bash || sh"
+			cmdStr := fmt.Sprintf("docker exec -it %s sh -c 'bash || sh'", msg.ContainerID)
+			c := exec.Command("ssh", "-t", "-p", r.activePort, r.activeUser+"@"+r.activeHost, cmdStr)
+			return r, tea.ExecProcess(c, func(err error) tea.Msg {
+				return terminal.ShellClosedMsg{}
+			})
+		}
+
+	case terminal.ShellClosedMsg:
+		// When SSH finishes, switch back to Dashboard and refresh telemetry
+		r.activeIdx = 1
+		r.sidebarIdx = 1
+		r.toast = components.NewToast("SSH Session Closed", "success", 2*time.Second)
+		// Clear terminal screen and redraw
+		return r, tea.Batch(cmds...)
 
 	case pages.RunRemoteCmdMsg:
 		if r.sshClient != nil {
@@ -246,6 +300,20 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
+		case "tab":
+			if r.isSplit {
+				r.isSplit = false
+				r.splitIdx = -1
+				r.activeFocus = 0
+			} else {
+				r.isSplit = true
+				r.splitIdx = r.sidebarIdx
+				r.activeFocus = 1
+			}
+			return r, nil
+		case "?":
+			r.toast = components.NewToast("Shortcuts: [ & ] Sidebar | Tab Split View | Ctrl+P Palette | R Restart | S Stop | Enter Connect", "info", 8*time.Second)
+			return r, nil
 		case "ctrl+c":
 			return r, tea.Quit
 		case "ctrl+p":
@@ -267,19 +335,66 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, nil
 		case "enter":
 			// If sidebar cursor is different from active page, switch to it!
-			if r.activeIdx != r.sidebarIdx {
-				r.activeIdx = r.sidebarIdx
+			if r.isSplit && r.activeFocus == 1 {
+				if r.splitIdx != r.sidebarIdx {
+					r.splitIdx = r.sidebarIdx
+					return r, nil
+				}
+			} else {
+				if r.activeIdx != r.sidebarIdx {
+					r.activeIdx = r.sidebarIdx
+					return r, nil
+				}
+			}
+			// If it's the same, fall through so the active page can handle Enter
+		}
+
+		// Handle global hotkeys if not in terminal (9) or input mode
+		targetIdx := r.activeIdx
+		if r.isSplit && r.activeFocus == 1 {
+			targetIdx = r.splitIdx
+		}
+		
+		allowGlobalKeys := targetIdx != 9
+		if inputPage, ok := r.pages[targetIdx].(interface{ IsInputActive() bool }); ok {
+			if inputPage.IsInputActive() {
+				allowGlobalKeys = false
+			}
+		}
+
+		if allowGlobalKeys {
+			switch msg.String() {
+			case "esc":
+				if r.toast.Active {
+					r.toast.Active = false
+					return r, nil
+				}
+				r.sidebarIdx = 1
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 1 } else { r.activeIdx = 1 }
 				return r, nil
 			}
 		}
 
-		// Strictly pass all other KeyMsgs to the active page only
-		updatedModel, cmd := r.pages[r.activeIdx].Update(msg)
-		r.pages[r.activeIdx] = updatedModel.(pages.Page)
+		// Strictly pass all other KeyMsgs to the active focus page only
+		targetPageIdx := r.activeIdx
+		if r.isSplit && r.activeFocus == 1 {
+			targetPageIdx = r.splitIdx
+		}
+		
+		updatedModel, cmd := r.pages[targetPageIdx].Update(msg)
+		r.pages[targetPageIdx] = updatedModel.(pages.Page)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return r, tea.Batch(cmds...)
+
+	case toggleWallpaperMsg:
+		r.wallpaperOn = !r.wallpaperOn
+		return r, nil
+
+	case switchThemeMsg:
+		theme.SetTheme(msg.name)
+		return r, nil
 	}
 
 	// Broadcast non-KeyMsgs to all pages
@@ -304,6 +419,7 @@ func (r Router) View() string {
 
 	sidebarStyle := lipgloss.NewStyle().
 		Width(26).
+		Height(r.height - 5). // Stretch border all the way down to status bar
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder(), false, true, false, false).
 		BorderForeground(dimColor)
@@ -311,16 +427,23 @@ func (r Router) View() string {
 	contentStyle := lipgloss.NewStyle().
 		Padding(1, 4)
 
-	logo := `
- █  █ █▀▀█ █▀▀█
- █  █ █  █ █▄▄▀
-  ▀▀  ▀▀▀▀ ▀ ▀▀
- V O R T E X
-`
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(accentColor).
-		Render(logo)
+	logoLines := []string{
+		` █  █ █▀▀█ █▀▀█`,
+		` █  █ █  █ █▄▄▀`,
+		`  ▀▀  ▀▀▀▀ ▀ ▀▀`,
+		` V O R T E X`,
+	}
+	
+	// Subtle text gradient for the logo
+	title := ""
+	for i, l := range logoLines {
+		color := primaryColor
+		if i == 1 { color = lipgloss.Color("81") }
+		if i == 2 { color = lipgloss.Color("39") }
+		if i == 3 { color = accentColor }
+		title += lipgloss.NewStyle().Bold(true).Foreground(color).Render(l)
+		if i < 3 { title += "\n" }
+	}
 
 	selectedStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -343,7 +466,30 @@ func (r Router) View() string {
 
 	// Dynamically build the sidebar from the registered pages
 	for i, p := range r.pages {
-		label := fmt.Sprintf("%s  %s", p.Icon(), p.Title())
+		title := p.Title()
+		icon := p.Icon()
+		if title == "Docker" { icon = "🐳" }
+		if title == "Services" { icon = "⚙" }
+		if title == "Files" { icon = "📁" }
+		if title == "Security" { icon = "🔐" }
+		if title == "Servers" { icon = "🖥" }
+		if title == "Mission Control" { icon = "🚀" }
+
+		label := fmt.Sprintf("%s  %s", icon, title)
+		
+		// Add live counts to label
+		countStr := ""
+		if title == "Docker" && r.payload.Docker.Containers > 0 {
+			countStr = lipgloss.NewStyle().Foreground(theme.Current.Accent).Render(fmt.Sprintf("%d", r.payload.Docker.Containers))
+		} else if title == "Services" && len(r.payload.Services) > 0 {
+			countStr = lipgloss.NewStyle().Foreground(theme.Current.Accent).Render(fmt.Sprintf("%d", len(r.payload.Services)))
+		}
+
+		if countStr != "" {
+			pad := 18 - lipgloss.Width(label)
+			if pad < 1 { pad = 1 }
+			label += strings.Repeat(" ", pad) + countStr
+		}
 
 		var renderedItem string
 		if i == r.sidebarIdx && i == r.activeIdx {
@@ -366,11 +512,16 @@ func (r Router) View() string {
 	// Render the active page
 	activePage := r.pages[r.activeIdx]
 
+	headerTitle := activePage.Title()
+	if r.isSplit && r.splitIdx >= 0 {
+		headerTitle += "  |  " + r.pages[r.splitIdx].Title()
+	}
+
 	header := lipgloss.NewStyle().
 		Bold(true).
 		Underline(true).
 		Foreground(primaryColor).
-		Render(activePage.Title())
+		Render(headerTitle)
 
 	var pageView string
 	if r.palette.Active {
@@ -378,7 +529,16 @@ func (r Router) View() string {
 	} else if r.sshClient == nil && r.activeIdx != 0 {
 		pageView = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("❌ Please connect to a server in the 'Servers' tab first.")
 	} else {
-		pageView = activePage.View()
+		// Normal View
+		if r.isSplit && r.splitIdx >= 0 {
+			leftView := activePage.View()
+			rightView := r.pages[r.splitIdx].View()
+			
+			// Try to divide width evenly for components if they support it, but for now just join
+			pageView = lipgloss.JoinHorizontal(lipgloss.Top, leftView, "    ", rightView)
+		} else {
+			pageView = activePage.View()
+		}
 	}
 
 	content := contentStyle.Render(
@@ -394,9 +554,38 @@ func (r Router) View() string {
 		layout = lipgloss.JoinVertical(lipgloss.Center, layout, r.toast.View())
 	}
 
-	// (Command Palette is now rendered inline above)
+	// Status Bar
+	statusBarStr := ""
+	if r.activeHost != "" {
+		ramStr := "0%"
+		if r.payload.Stats.RAMPercent > 0 {
+			ramStr = fmt.Sprintf("%.0f%%", r.payload.Stats.RAMPercent)
+		}
+		cpuStr := "0%"
+		if r.payload.Stats.CPUPercent > 0 {
+			cpuStr = fmt.Sprintf("%.0f%%", r.payload.Stats.CPUPercent)
+		}
+		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Bg).Background(theme.Current.Success).Render("  NORMAL  ")
+		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Text).Render(fmt.Sprintf("  %s  |  SSH <10ms  |  %s  |  CPU %s  |  RAM %s  |  Ctrl+P Search  ? Help  Tab Focus", r.activeHost, time.Now().Format("15:04"), cpuStr, ramStr))
+	} else {
+		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Text).Render("  NOT CONNECTED  |  Enter=Select Server")
+	}
 
-	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, layout)
+	statusBar := lipgloss.NewStyle().
+		Padding(0, 1).
+		Render(statusBarStr)
+
+	// Combine layout and status bar
+	finalLayout := lipgloss.JoinVertical(lipgloss.Left, layout, "\n", statusBar)
+
+	// Wallpaper rendering
+	if r.wallpaperOn && r.wallpaper != "" && r.width > 0 && r.height > 0 {
+		return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, finalLayout, 
+			lipgloss.WithWhitespaceChars(r.wallpaper), 
+			lipgloss.WithWhitespaceForeground(lipgloss.Color("235")))
+	}
+
+	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, finalLayout)
 }
 
 func main() {

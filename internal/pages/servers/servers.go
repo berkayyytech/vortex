@@ -164,18 +164,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentMode = modeForm
 				return m, nil
 			}
-
-			s := m.servers[m.cursor]
-			m.status = fmt.Sprintf("Connecting to %s...", s.Name)
-
-			// Establish connection asynchronously
-			return m, func() tea.Msg {
-				client, err := sshlib.Connect(s.Host, s.Port, s.User, s.Password, s.KeyPath)
-				if err != nil {
-					return fmt.Errorf("❌ Connection failed: %v", err)
-				}
-				return sshlib.ConnectedMsg{Client: client, Host: s.Host, Port: s.Port, User: s.User}
-			}
+			return m.instantConnect()
 		}
 
 	case error:
@@ -187,6 +176,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m Model) IsInputActive() bool {
+	return m.currentMode == modeForm
+}
+
+func (m *Model) instantConnect() (tea.Model, tea.Cmd) {
+	if m.cursor >= len(m.servers) {
+		return *m, nil
+	}
+	s := m.servers[m.cursor]
+	m.status = fmt.Sprintf("Connecting to %s...", s.Name)
+
+	return *m, func() tea.Msg {
+		client, err := sshlib.Connect(s.Host, s.Port, s.User, s.Password, s.KeyPath)
+		if err != nil {
+			return fmt.Errorf("❌ Connection failed: %v", err)
+		}
+		return sshlib.ConnectedMsg{Client: client, Host: s.Host, Port: s.Port, User: s.User}
+	}
 }
 
 func (m *Model) updateInputs(msg tea.Msg) tea.Cmd {
@@ -237,7 +246,17 @@ func (m Model) View() string {
 			style = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 		}
 
-		items += fmt.Sprintf("%s %s %s\n", cursor, style.Render(s.Name), lipgloss.NewStyle().Foreground(dimColor).Render(s.User+"@"+s.Host))
+		icon := "🟢"
+		lowerName := strings.ToLower(s.Name)
+		if strings.Contains(lowerName, "dev") {
+			icon = "🔴"
+		} else if strings.Contains(lowerName, "backup") {
+			icon = "🟡"
+		} else if m.client == nil && m.cursor != i {
+			icon = "⚪" // not connected
+		}
+
+		items += fmt.Sprintf("%s %s %s %s\n", cursor, icon, style.Render(s.Name), lipgloss.NewStyle().Foreground(dimColor).Render(s.User+"@"+s.Host))
 	}
 
 	// Add new button

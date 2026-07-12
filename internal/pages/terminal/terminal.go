@@ -9,6 +9,7 @@ import (
 )
 
 type OpenShellMsg struct{}
+type ShellClosedMsg struct{}
 
 type Model struct {
 	host string

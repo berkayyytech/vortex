@@ -21,7 +21,7 @@ func NewEngine(c *sshlib.Client) *Engine {
 // for live system telemetry (CPU, RAM, Docker, Services) without blocking the UI.
 func (e *Engine) FetchPayload(includeLogs bool) tea.Cmd {
 	return func() tea.Msg {
-		out, err := e.client.Run("/tmp/vortex-agent payload")
+		out, err := e.client.Run("./vortex-agent payload")
 		if err != nil {
 			// Return a specialized error message if the agent is down
 			return agent.PayloadErrorMsg{Err: err}

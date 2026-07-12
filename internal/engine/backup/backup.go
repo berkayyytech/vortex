@@ -75,3 +75,15 @@ func (e *Engine) ListBackups() ([]BackupJob, error) {
 	}
 	return jobs, nil
 }
+
+// DeleteBackup removes a backup archive from the server
+func (e *Engine) DeleteBackup(id string) error {
+	_, err := e.client.Run(fmt.Sprintf("rm -f %s", id))
+	return err
+}
+
+// RestoreBackup restores a backup archive to the root directory
+func (e *Engine) RestoreBackup(id string) error {
+	_, err := e.client.Run(fmt.Sprintf("tar -xzf %s -C /", id))
+	return err
+}
