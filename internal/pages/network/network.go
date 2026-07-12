@@ -65,7 +65,7 @@ func (m Model) View() string {
 	)
 	for _, iface := range m.netInfo.Interfaces {
 		status := success.Render(iface.Status)
-		if iface.Status != "UP" { status = dimColor.Render(iface.Status) }
+		if iface.Status != "UP" { status = lipgloss.NewStyle().Foreground(dimColor).Render(iface.Status) }
 		
 		ip := iface.IPv4
 		if ip == "" { ip = "None" }
@@ -93,7 +93,7 @@ func (m Model) View() string {
 	)
 	for i, p := range m.netInfo.Ports {
 		if i > 8 { // limit to 8 for display
-			portStr = lipgloss.JoinVertical(lipgloss.Left, portStr, dimColor.Render("... and more"))
+			portStr = lipgloss.JoinVertical(lipgloss.Left, portStr, lipgloss.NewStyle().Foreground(dimColor).Render("... and more"))
 			break
 		}
 		addr := p.Address

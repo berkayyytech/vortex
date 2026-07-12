@@ -2,6 +2,7 @@ package logs
 
 import (
 	"fmt"
+	"strings"
 	sshlib "main/internal/ssh"
 )
 
@@ -15,7 +16,14 @@ func NewEngine(c *sshlib.Client) *Engine {
 
 // FetchSystemdLogs fetches the latest lines from journalctl
 func (e *Engine) FetchSystemdLogs(lines int) (string, error) {
-	return e.client.Run(fmt.Sprintf("journalctl -n %d --no-pager", lines))
+	out, err := e.client.Run(fmt.Sprintf("journalctl -n %d --no-pager", lines))
+	if err != nil {
+		if strings.Contains(err.Error(), "command not found") || strings.Contains(err.Error(), "127") {
+			return "Systemd (journalctl) is not available on this server or container.", nil
+		}
+		return "", err
+	}
+	return out, nil
 }
 
 // FetchDockerLogs fetches the latest lines for a specific container

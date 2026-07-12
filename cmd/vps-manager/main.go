@@ -565,7 +565,24 @@ func (r Router) View() string {
 		if r.payload.Stats.CPUPercent > 0 {
 			cpuStr = fmt.Sprintf("%.0f%%", r.payload.Stats.CPUPercent)
 		}
-		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Bg).Background(theme.Current.Success).Render("  NORMAL  ")
+		
+		isAbnormal := false
+		if r.payload.Stats.CPUPercent > 90 || r.payload.Stats.RAMPercent > 90 || r.payload.Stats.DiskPercent > 90 {
+			isAbnormal = true
+		}
+		for _, s := range r.payload.Services {
+			if s.Status == "failed" {
+				isAbnormal = true
+				break
+			}
+		}
+
+		modeStr := lipgloss.NewStyle().Foreground(theme.Current.Bg).Background(theme.Current.Success).Render("  NORMAL  ")
+		if isAbnormal {
+			modeStr = lipgloss.NewStyle().Foreground(theme.Current.Bg).Background(theme.Current.Warning).Bold(true).Render("  ABNORMAL  ")
+		}
+
+		statusBarStr += modeStr
 		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Text).Render(fmt.Sprintf("  %s  |  SSH <10ms  |  %s  |  CPU %s  |  RAM %s  |  Ctrl+P Search  ? Help  Tab Focus", r.activeHost, time.Now().Format("15:04"), cpuStr, ramStr))
 	} else {
 		statusBarStr += lipgloss.NewStyle().Foreground(theme.Current.Text).Render("  NOT CONNECTED  |  Enter=Select Server")

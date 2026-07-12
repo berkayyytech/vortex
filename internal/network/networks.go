@@ -2,7 +2,9 @@ package network
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -61,9 +63,6 @@ type ConnectionStats struct {
 
 var (
 	cachedPublicIP string
-	lastNetDev     time.Time
-	lastRx         = make(map[string]uint64)
-	lastTx         = make(map[string]uint64)
 )
 
 func getPublicIP() string {
@@ -217,30 +216,51 @@ func parseNetDev() map[string][2]uint64 {
 func gatherInterfacesAndBandwidth(bw *Bandwidth) []Interface {
 	var ifaces []Interface
 	currentDev := parseNetDev()
-	now := time.Now()
-	var duration float64 = 0
-	if !lastNetDev.IsZero() {
-		duration = now.Sub(lastNetDev).Seconds()
-	}
 	
 	info := getInterfacesInfo()
 	
 	var totalRx, totalTx, currentRx, currentTx uint64
 	
+	type NetState struct {
+		Time time.Time
+		Rx   map[string]uint64
+		Tx   map[string]uint64
+	}
+	
+	var state NetState
+	stateData, err := os.ReadFile("/tmp/vortex-netstate.json")
+	if err == nil {
+		json.Unmarshal(stateData, &state)
+	}
+	if state.Rx == nil { state.Rx = make(map[string]uint64) }
+	if state.Tx == nil { state.Tx = make(map[string]uint64) }
+	
+	now := time.Now()
+	var duration float64 = 0
+	if !state.Time.IsZero() {
+		duration = now.Sub(state.Time).Seconds()
+	}
+	
+	newState := NetState{
+		Time: now,
+		Rx:   make(map[string]uint64),
+		Tx:   make(map[string]uint64),
+	}
+
 	for name, iface := range info {
 		var rx, tx, rxRate, txRate uint64
 		if dev, ok := currentDev[name]; ok {
 			rx = dev[0]
 			tx = dev[1]
 			
-			if lastRx[name] > 0 && duration > 0 && rx >= lastRx[name] {
-				rxRate = uint64(float64(rx - lastRx[name]) / duration)
+			if state.Rx[name] > 0 && duration > 0 && rx >= state.Rx[name] {
+				rxRate = uint64(float64(rx - state.Rx[name]) / duration)
 			}
-			if lastTx[name] > 0 && duration > 0 && tx >= lastTx[name] {
-				txRate = uint64(float64(tx - lastTx[name]) / duration)
+			if state.Tx[name] > 0 && duration > 0 && tx >= state.Tx[name] {
+				txRate = uint64(float64(tx - state.Tx[name]) / duration)
 			}
-			lastRx[name] = rx
-			lastTx[name] = tx
+			newState.Rx[name] = rx
+			newState.Tx[name] = tx
 			
 			if name != "lo" {
 				totalRx += rx
@@ -263,7 +283,10 @@ func gatherInterfacesAndBandwidth(bw *Bandwidth) []Interface {
 			TxRate: txRate,
 		})
 	}
-	lastNetDev = now
+	
+	if b, err := json.Marshal(newState); err == nil {
+		os.WriteFile("/tmp/vortex-netstate.json", b, 0644)
+	}
 	
 	bw.CurrentRx = currentRx
 	bw.CurrentTx = currentTx
