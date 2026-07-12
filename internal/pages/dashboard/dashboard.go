@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -105,12 +104,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ramHistory = append(m.ramHistory, m.sysStats.RAMPercent)
 		m.diskHistory = append(m.diskHistory, m.sysStats.DiskPercent)
 
-		if !m.isTesting {
-			down := float64(5 + rand.Intn(15))
-			up := float64(2 + rand.Intn(8))
-			m.netDownHistory = append(m.netDownHistory, down/20.0*100.0)
-			m.netUpHistory = append(m.netUpHistory, up/10.0*100.0)
-		}
+		rxMbps := float64(msg.Network.Bandwidth.CurrentRx) * 8.0 / 1000000.0
+		txMbps := float64(msg.Network.Bandwidth.CurrentTx) * 8.0 / 1000000.0
+		// Normalize for sparkline (0-100 scale, assuming 100Mbps link for visualization purposes)
+		m.netDownHistory = append(m.netDownHistory, (rxMbps/100.0)*100.0)
+		m.netUpHistory = append(m.netUpHistory, (txMbps/100.0)*100.0)
 
 		if len(m.cpuHistory) > 20 { m.cpuHistory = m.cpuHistory[1:] }
 		if len(m.ramHistory) > 20 { m.ramHistory = m.ramHistory[1:] }
@@ -249,29 +247,47 @@ func (m Model) View() string {
 	)
 
 	// 2. Metrics Cards
+	getTrend := func(hist []float64, invert bool) (string, lipgloss.Color) {
+		if len(hist) < 2 { return "  0.0%", theme.Current.Dim }
+		diff := hist[len(hist)-1] - hist[len(hist)-2]
+		c := theme.Current.Success
+		if diff > 0 {
+			if invert { c = theme.Current.Success } else { c = theme.Current.Warning }
+			return fmt.Sprintf("▲ +%.1f%%", diff), c
+		} else if diff < 0 {
+			if invert { c = theme.Current.Warning } else { c = theme.Current.Success }
+			return fmt.Sprintf("▼ %.1f%%", diff), c
+		}
+		return "  0.0%", theme.Current.Dim
+	}
+
 	cpuVal := fmt.Sprintf("%3.0f%%", m.sysStats.CPUPercent)
 	cpuColor := theme.Current.Success
 	if m.sysStats.CPUPercent > 80 { cpuColor = theme.Current.Error } else if m.sysStats.CPUPercent > 50 { cpuColor = theme.Current.Warning }
+	cpuTrend, cpuTrendC := getTrend(m.cpuHistory, false)
 	
 	cpuCard := boxStyle.Copy().Width(cardWidth).Render(
 		bold.Render("CPU") + "\n\n" +
-		lipgloss.NewStyle().Foreground(cpuColor).Render(cpuVal) + "\n\n" +
+		lipgloss.NewStyle().Foreground(cpuColor).Render(cpuVal) + "  " + lipgloss.NewStyle().Foreground(cpuTrendC).Render(cpuTrend) + "\n\n" +
 		components.Sparkline(m.cpuHistory, cardWidth-6, cpuColor),
 	)
 
 	ramVal := fmt.Sprintf("%3.0f%%", m.sysStats.RAMPercent)
 	ramColor := theme.Current.Success
 	if m.sysStats.RAMPercent > 80 { ramColor = theme.Current.Error } else if m.sysStats.RAMPercent > 50 { ramColor = theme.Current.Warning }
+	ramTrend, ramTrendC := getTrend(m.ramHistory, false)
+	
 	ramCard := boxStyle.Copy().Width(cardWidth).Render(
 		bold.Render("Memory") + "\n\n" +
-		lipgloss.NewStyle().Foreground(ramColor).Render(ramVal) + "\n\n" +
+		lipgloss.NewStyle().Foreground(ramColor).Render(ramVal) + "  " + lipgloss.NewStyle().Foreground(ramTrendC).Render(ramTrend) + "\n\n" +
 		components.Sparkline(m.ramHistory, cardWidth-6, ramColor),
 	)
 
 	diskVal := fmt.Sprintf("%3.0f%%", m.sysStats.DiskPercent)
+	diskTrend, diskTrendC := getTrend(m.diskHistory, false)
 	diskCard := boxStyle.Copy().Width(cardWidth).Render(
 		bold.Render("Disk") + "\n\n" +
-		primary.Render(diskVal) + "\n\n" +
+		primary.Render(diskVal) + "  " + lipgloss.NewStyle().Foreground(diskTrendC).Render(diskTrend) + "\n\n" +
 		components.Sparkline(m.diskHistory, cardWidth-6, theme.Current.Primary),
 	)
 
@@ -285,8 +301,8 @@ func (m Model) View() string {
 	}
 	netCard := boxStyle.Copy().Width(cardWidth).Render(
 		bold.Render("Network") + "\n\n" +
-		network.Render(netUpStr) + "\n\n" +
-		network.Render(netDownStr),
+		network.Render(netUpStr) + "  " + components.Sparkline(m.netUpHistory, cardWidth-16, theme.Current.Network) + "\n" +
+		network.Render(netDownStr) + "  " + components.Sparkline(m.netDownHistory, cardWidth-16, theme.Current.Accent),
 	)
 
 	topMetricsRow := lipgloss.JoinHorizontal(lipgloss.Top, cpuCard, "  ", ramCard, "  ", diskCard, "  ", netCard)
@@ -307,7 +323,13 @@ func (m Model) View() string {
 	if healthScore < 70 { healthColor = theme.Current.Warning; healthWord = "Warning" }
 	if healthScore < 40 { healthColor = theme.Current.Error; healthWord = "Critical" }
 
-	healthContent := fmt.Sprintf("Health Score\n\n%s  %s\n\n", lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d / 100", healthScore)), dim.Render(healthWord))
+	meterBlocks := int((float64(healthScore) / 100.0) * 20.0)
+	var meterStr string
+	for i := 0; i < 20; i++ {
+		if i < meterBlocks { meterStr += "█" } else { meterStr += "░" }
+	}
+	
+	healthContent := fmt.Sprintf("%s\n\nHealth Score\n\n%s  %s\n\n", lipgloss.NewStyle().Foreground(healthColor).Render(meterStr), lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d / 100", healthScore)), dim.Render(healthWord))
 	
 	if m.sysStats.CPUPercent < 80 { healthContent += success.Render("✓") + " CPU healthy\n" } else { healthContent += warning.Render("⚠") + " CPU high load\n" }
 	if m.sysStats.DiskPercent < 80 { healthContent += success.Render("✓") + " Disk healthy\n" } else { healthContent += warning.Render("⚠") + " Disk nearing capacity\n" }
@@ -320,19 +342,38 @@ func (m Model) View() string {
 	)
 
 	// 4. Quick Status (Widgets)
+	publicIP := m.payload.Network.PublicIP
+	if publicIP == "" { publicIP = "Fetching..." }
+	
+	openPorts := ""
+	for i, p := range m.payload.Network.Ports {
+		if i > 2 {
+			openPorts += "..."
+			break
+		}
+		portNum := strings.Split(p.Address, ":")
+		if len(portNum) > 1 {
+			openPorts += portNum[len(portNum)-1] + " "
+		}
+	}
+	if openPorts == "" { openPorts = "None" }
+	
+	gw := m.payload.Network.Gateway
+	if gw == "" { gw = "Unknown" }
+
 	statusGrid := lipgloss.JoinHorizontal(lipgloss.Top, 
 		lipgloss.JoinVertical(lipgloss.Left, 
-			dim.Render("Top Process:  ") + primary.Render("node (14%)"),
-			dim.Render("Load Average: ") + primary.Render("1.14 0.92 0.88"),
-			dim.Render("CPU Temp:     ") + primary.Render("48°C"),
+			dim.Render("Connections:  ") + primary.Render(fmt.Sprintf("%d Estab", m.payload.Network.Connection.Established)),
+			dim.Render("TCP / UDP:    ") + primary.Render(fmt.Sprintf("%d / %d", m.payload.Network.Connection.ActiveTCP, m.payload.Network.Connection.ActiveUDP)),
+			dim.Render("Gateway:      ") + primary.Render(gw),
 			dim.Render("Docker:       ") + primary.Render(fmt.Sprintf("%d Containers", m.payload.Docker.Containers)),
 		),
 		"    ",
 		lipgloss.JoinVertical(lipgloss.Left, 
 			dim.Render("Failed Svcs:  ") + errorStyle.Render(fmt.Sprintf("%d", failedServices)),
 			dim.Render("Logged users: ") + primary.Render("1"),
-			dim.Render("Public IP:    ") + info.Render("203.0.113.42"),
-			dim.Render("Open Ports:   ") + primary.Render("22, 80, 443"),
+			dim.Render("Public IP:    ") + info.Render(publicIP),
+			dim.Render("Open Ports:   ") + primary.Render(openPorts),
 		),
 	)
 	
@@ -352,22 +393,21 @@ func (m Model) View() string {
 		bold.Render("Recent Activity") + "\n\n" + activityContent,
 	)
 	
-	// 6. Servers
-	serversContent := ""
-	for _, s := range m.servers {
-		icon := success.Render("🟢")
-		lowerName := strings.ToLower(s.Name)
-		if strings.Contains(lowerName, "dev") { icon = errorStyle.Render("🔴") } else if strings.Contains(lowerName, "backup") { icon = warning.Render("🟡") } else if m.client == nil || m.sysStats.OS == "" { icon = dim.Render("⚪") }
-		
-		sName := s.Name
-		if m.client != nil && m.activeHost == s.Host { sName = bold.Render(s.Name) } else { sName = primary.Render(s.Name) }
-		serversContent += fmt.Sprintf("%s %s\n", icon, sName)
+	// 6. Attention Required
+	attentionContent := ""
+	if m.sysStats.CPUPercent > 90 { attentionContent += errorStyle.Render("• CPU usage above 90%") + "\n" }
+	if m.sysStats.RAMPercent > 90 { attentionContent += errorStyle.Render("• Memory usage above 90%") + "\n" }
+	if m.sysStats.DiskPercent > 90 { attentionContent += errorStyle.Render("• Disk usage above 90%") + "\n" }
+	if failedServices > 0 { attentionContent += errorStyle.Render(fmt.Sprintf("• %d services failing", failedServices)) + "\n" }
+	if m.sysStats.CPUPercent > 50 && m.sysStats.CPUPercent <= 90 { attentionContent += warning.Render("• CPU usage elevated") + "\n" }
+	if attentionContent == "" {
+		attentionContent = success.Render("✓ All systems operational")
 	}
-	if len(m.servers) == 0 { serversContent = dim.Render("No servers configured.") }
-	serversCard := boxStyle.Copy().Width(halfWidth).Render(
-		bold.Render("Servers") + "\n\n" + serversContent,
+
+	attentionCard := boxStyle.Copy().Width(halfWidth).Render(
+		warning.Render("⚠ Attention Required") + "\n\n" + attentionContent,
 	)
-	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, activityCard, "  ", serversCard)
+	bottomRow := lipgloss.JoinHorizontal(lipgloss.Top, activityCard, "  ", attentionCard)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,

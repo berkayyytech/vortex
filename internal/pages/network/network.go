@@ -45,6 +45,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	dimColor := lipgloss.Color("240")
 	accentColor := lipgloss.Color("205")
+	success := lipgloss.NewStyle().Foreground(lipgloss.Color("46"))
 
 	card := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -57,35 +58,77 @@ func (m Model) View() string {
 		Foreground(accentColor).
 		MarginBottom(1)
 
+	// Network Interfaces Table
+	ifaceStr := lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("%-12s %-8s %-16s %-16s %-20s", "INTERFACE", "STATUS", "IPV4", "TYPE", "TRAFFIC (TX/RX)")),
+		"────────────────────────────────────────────────────────────────────────────",
+	)
+	for _, iface := range m.netInfo.Interfaces {
+		status := success.Render(iface.Status)
+		if iface.Status != "UP" { status = dimColor.Render(iface.Status) }
+		
+		ip := iface.IPv4
+		if ip == "" { ip = "None" }
+		if len(ip) > 15 { ip = ip[:15] }
+
+		txMbps := float64(iface.TxRate) * 8 / 1000000.0
+		rxMbps := float64(iface.RxRate) * 8 / 1000000.0
+		traffic := fmt.Sprintf("%.1f / %.1f Mbps", txMbps, rxMbps)
+
+		ifaceStr = lipgloss.JoinVertical(lipgloss.Left, ifaceStr,
+			fmt.Sprintf("%-12s %-18s %-16s %-16s %-20s", iface.Name, status, ip, iface.Type, traffic),
+		)
+	}
+
 	netTable := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color("238")).
 		Padding(0, 1).
-		Render(
-			lipgloss.JoinVertical(lipgloss.Left,
-				lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("%-15s %-18s %-20s", "INTERFACE", "IP ADDRESS", "TRAFFIC (TX/RX)")),
-				"────────────────────────────────────────────────────────",
-				fmt.Sprintf("%-15s %-18s %-20s", "eth0", "192.168.1.45", "1.2 GB / 4.5 GB"),
-				fmt.Sprintf("%-15s %-18s %-20s", "lo", "127.0.0.1", "12 MB / 12 MB"),
-				fmt.Sprintf("%-15s %-18s %-20s", "docker0", "172.17.0.1", "340 MB / 150 MB"),
-			),
+		Render(ifaceStr)
+
+	// Ports Table
+	portStr := lipgloss.JoinVertical(lipgloss.Left,
+		lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(fmt.Sprintf("%-8s %-22s %-12s %-20s", "PROTO", "LOCAL ADDRESS", "STATE", "PROCESS")),
+		"────────────────────────────────────────────────────────────────",
+	)
+	for i, p := range m.netInfo.Ports {
+		if i > 8 { // limit to 8 for display
+			portStr = lipgloss.JoinVertical(lipgloss.Left, portStr, dimColor.Render("... and more"))
+			break
+		}
+		addr := p.Address
+		if len(addr) > 20 { addr = addr[:20] }
+		proc := p.Process
+		if len(proc) > 20 { proc = proc[:20] }
+		if proc == "" { proc = "Unknown" }
+		portStr = lipgloss.JoinVertical(lipgloss.Left, portStr,
+			fmt.Sprintf("%-8s %-22s %-12s %-20s", p.Protocol, addr, p.State, proc),
 		)
+	}
+	portTable := lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("238")).
+		Padding(0, 1).
+		Render(portStr)
 
 	connStats := card.Render(
 		lipgloss.JoinVertical(lipgloss.Left,
-			titleCard.Render("CONNECTIONS & SPEEDTEST"),
-			fmt.Sprintf("Server:      %s", m.netInfo.ServerName),
-			fmt.Sprintf("Ping:        %s", m.netInfo.Ping),
-			fmt.Sprintf("Download:    %.2f Mbps", m.netInfo.Download),
-			fmt.Sprintf("Upload:      %.2f Mbps", m.netInfo.Upload),
-			fmt.Sprintf("Status:      %s", m.netInfo.Status),
+			titleCard.Render("NETWORK OVERVIEW"),
+			fmt.Sprintf("Hostname:    %s", m.netInfo.Hostname),
+			fmt.Sprintf("Public IP:   %s", m.netInfo.PublicIP),
+			fmt.Sprintf("Private IP:  %s", m.netInfo.PrivateIP),
+			fmt.Sprintf("Gateway:     %s", m.netInfo.Gateway),
 			"",
-			"Active TCP:  42",
-			"Listening:   22 (SSH), 80 (HTTP), 443 (HTTPS)",
+			titleCard.Render("CONNECTION STATS"),
+			fmt.Sprintf("Active TCP:  %d", m.netInfo.Connection.ActiveTCP),
+			fmt.Sprintf("Active UDP:  %d", m.netInfo.Connection.ActiveUDP),
+			fmt.Sprintf("Established: %d", m.netInfo.Connection.Established),
+			fmt.Sprintf("Errors:      %d", m.netInfo.Connection.Errors),
 		),
 	)
 
-	return netTable + "\n" + connStats
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, netTable, "   ", connStats)
+	return lipgloss.JoinVertical(lipgloss.Left, topRow, "\n", portTable)
 }
 
 func (m Model) Title() string { return "Network" }

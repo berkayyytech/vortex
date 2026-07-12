@@ -11,7 +11,7 @@ import (
 // Payload represents the combined JSON state returned by the remote vortex-agent.
 type Payload struct {
 	Stats    stats.SystemStats   `json:"stats"`
-	Network  network.NetworkInfo `json:"network"`
+	Network  network.NetworkInfo `json:"network"` // Now includes extended metrics (bandwidth, ports, etc.)
 	Docker   docker.DockerStats  `json:"docker"`
 	Services []services.Service  `json:"services"`
 	Logs     string              `json:"logs,omitempty"`
