@@ -10,6 +10,8 @@ import (
 	"main/internal/pages"
 	"main/internal/pages/apps"
 	"main/internal/pages/backup"
+	"main/internal/pages/certs"
+	"main/internal/pages/cron"
 	"main/internal/pages/dashboard"
 	"main/internal/pages/docker"
 	"main/internal/pages/files"
@@ -33,6 +35,8 @@ import (
 )
 
 type Router struct {
+	startup    components.Startup
+	globe      components.Globe
 	pages      []pages.Page
 	sidebarIdx  int
 	activeIdx   int
@@ -63,6 +67,8 @@ type switchThemeMsg struct{ name string }
 
 func initialModel() Router {
 	r := Router{
+		startup:   components.NewStartup(),
+		globe:     components.NewGlobe(),
 		pages: []pages.Page{
 			servers.New(),
 			dashboard.New(),
@@ -75,6 +81,8 @@ func initialModel() Router {
 			backup.New(),
 			terminal.New(),
 			settings.New(),
+			cron.New(),
+			certs.New(),
 		},
 		sidebarIdx:  0,
 		activeIdx:   0,
@@ -162,6 +170,7 @@ func initialModel() Router {
 
 func (r Router) Init() tea.Cmd {
 	var cmds []tea.Cmd
+	cmds = append(cmds, components.TickStartup())
 	for _, p := range r.pages {
 		if cmd := p.Init(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -172,8 +181,24 @@ func (r Router) Init() tea.Cmd {
 
 func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-
+	
 	switch msg := msg.(type) {
+	case components.TickStartupMsg:
+		if r.startup.Active {
+			cmd := r.startup.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return r, tea.Batch(cmds...)
+		}
+	case components.TickGlobeMsg:
+		if r.globe.Active {
+			cmd := r.globe.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return r, tea.Batch(cmds...)
+		}
 	case sshlib.ConnectedMsg:
 		r.sshClient = msg.Client
 		r.sysEngine = sysengine.NewEngine(r.sshClient)
@@ -299,7 +324,23 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, cmd
 		}
 
+		if r.globe.Active {
+			switch msg.String() {
+			case "esc", "g", "G":
+				r.globe.Active = false
+				return r, nil
+			default:
+				cmd := r.globe.Update(msg)
+				return r, cmd
+			}
+		}
+
 		switch msg.String() {
+		case "g", "G":
+			r.globe.Active = true
+			r.globe.IsEntering = true
+			r.globe.EnterProgress = 0
+			return r, components.TickGlobe()
 		case "tab":
 			if r.isSplit {
 				r.isSplit = false
@@ -372,6 +413,26 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.sidebarIdx = 1
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 1 } else { r.activeIdx = 1 }
 				return r, nil
+			case "f":
+				r.sidebarIdx = 5
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 5 } else { r.activeIdx = 5 }
+				return r, nil
+			case "l":
+				r.sidebarIdx = 6
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 6 } else { r.activeIdx = 6 }
+				return r, nil
+			case "w":
+				r.sidebarIdx = 7
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 7 } else { r.activeIdx = 7 }
+				return r, nil
+			case "x":
+				r.sidebarIdx = 11
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 11 } else { r.activeIdx = 11 }
+				return r, nil
+			case "c":
+				r.sidebarIdx = 12
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 12 } else { r.activeIdx = 12 }
+				return r, nil
 			}
 		}
 
@@ -413,6 +474,19 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (r Router) View() string {
+	if r.width == 0 {
+		return "Initializing..."
+	}
+
+	if r.startup.Active {
+		return r.startup.View(r.width, r.height)
+	}
+	
+	if r.globe.Active {
+		return r.globe.View(r.width, r.height, r.payload, r.activeHost, r.isFetching)
+	}
+
+	// Layout definitions
 	accentColor := theme.Current.Accent
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim

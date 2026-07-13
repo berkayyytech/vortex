@@ -11,6 +11,7 @@ import (
 	"main/internal/agent"
 	"main/internal/components"
 	"main/internal/config"
+	"main/internal/pages"
 	sshlib "main/internal/ssh"
 	"main/internal/stats"
 	"main/internal/theme"
@@ -86,6 +87,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.recentActivity) > 5 {
 			m.recentActivity = m.recentActivity[:5]
 		}
+		m.isTesting = true
+		return m, fetchNetworkMeta(m.client)
+	case pages.LogActivityMsg:
+		m.recentActivity = append([]string{fmt.Sprintf("• %s", msg.Message)}, m.recentActivity...)
+		if len(m.recentActivity) > 5 {
+			m.recentActivity = m.recentActivity[:5]
+		}
 		return m, nil
 	case statsMsg:
 		m.sysStats = stats.SystemStats(msg)
@@ -106,9 +114,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		rxMbps := float64(msg.Network.Bandwidth.CurrentRx) * 8.0 / 1000000.0
 		txMbps := float64(msg.Network.Bandwidth.CurrentTx) * 8.0 / 1000000.0
-		// Normalize for sparkline (0-100 scale, assuming 100Mbps link for visualization purposes)
-		m.netDownHistory = append(m.netDownHistory, (rxMbps/100.0)*100.0)
-		m.netUpHistory = append(m.netUpHistory, (txMbps/100.0)*100.0)
+		m.netDownHistory = append(m.netDownHistory, rxMbps)
+		m.netUpHistory = append(m.netUpHistory, txMbps)
 
 		if len(m.cpuHistory) > 20 { m.cpuHistory = m.cpuHistory[1:] }
 		if len(m.ramHistory) > 20 { m.ramHistory = m.ramHistory[1:] }
@@ -118,77 +125,64 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 	case tickMsg:
-		var cmd tea.Cmd
+		var cmds []tea.Cmd
+		cmds = append(cmds, fetchStatsCmd)
 		if m.isTesting {
 			m.testAnimFrame++
-		} else {
-			cmd = fetchStatsCmd
 		}
-		return m, tea.Batch(cmd, tickCmd())
+		
+		// Run automated lightweight network poll every 30s
+		if time.Now().Second() % 30 == 0 && m.client != nil && !m.isTesting {
+			m.isTesting = true
+			cmds = append(cmds, fetchNetworkMeta(m.client))
+		}
+		
+		cmds = append(cmds, tickCmd())
+		return m, tea.Batch(cmds...)
 	case speedTestResultMsg:
 		m.isTesting = false
 		m.netInfo = msg
-		m.recentActivity = append([]string{"• Network speedtest completed"}, m.recentActivity...)
-		if len(m.recentActivity) > 6 {
-			m.recentActivity = m.recentActivity[:6]
-		}
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "t", "T":
-			if !m.isTesting && m.client != nil {
-				m.isTesting = true
-				m.netInfo = nil
-				m.recentActivity = append([]string{"• Started network speedtest"}, m.recentActivity...)
-				if len(m.recentActivity) > 6 {
-					m.recentActivity = m.recentActivity[:6]
-				}
-				return m, runSpeedTest(m.client)
-			}
-		}
+		// Manual trigger disabled in favor of automated ping loop
 	}
 	return m, nil
 }
 
 type speedTestResultMsg *NetworkInfo
 
-func runSpeedTest(c *sshlib.Client) tea.Cmd {
+func fetchNetworkMeta(c *sshlib.Client) tea.Cmd {
 	return func() tea.Msg {
 		script := `
 		if command -v curl >/dev/null 2>&1; then
 			IP=$(curl -s --max-time 3 ipinfo.io/ip)
 			ISP=$(curl -s --max-time 3 ipinfo.io/org | cut -d' ' -f2-)
 			PING=$(ping -c 3 1.1.1.1 | tail -1 | awk -F '/' '{print $4}')
-			DOWN_BPS=$(curl -s -w "%{speed_download}" -m 10 -o /dev/null https://speed.cloudflare.com/__down?bytes=25000000)
 			
 			if [ -z "$ISP" ]; then ISP="Unknown"; fi
 			if [ -z "$IP" ]; then IP="Unknown"; fi
 			if [ -z "$PING" ]; then PING="N/A"; fi
 			
-			echo "$ISP|$IP|${PING}ms|$DOWN_BPS"
+			echo "$ISP|$IP|${PING}ms"
 		else
 			echo "error"
 		fi
 		`
 		out, err := c.Run(script)
 		if err != nil || strings.TrimSpace(out) == "error" {
-			return speedTestResultMsg(&NetworkInfo{Download: "Error", Ping: "N/A", ISP: "N/A", IP: "N/A"})
+			return speedTestResultMsg(&NetworkInfo{Download: "N/A", Ping: "N/A", ISP: "N/A", IP: "N/A"})
 		}
 		
 		parts := strings.Split(strings.TrimSpace(out), "|")
-		if len(parts) != 4 {
-			return speedTestResultMsg(&NetworkInfo{Download: "Failed", Ping: "N/A", ISP: "N/A", IP: "N/A"})
+		if len(parts) != 3 {
+			return speedTestResultMsg(&NetworkInfo{Download: "N/A", Ping: "N/A", ISP: "N/A", IP: "N/A"})
 		}
-		
-		var bps float64
-		fmt.Sscanf(parts[3], "%f", &bps)
-		mbps := (bps * 8) / 1000000
 		
 		return speedTestResultMsg(&NetworkInfo{
 			ISP:      parts[0],
 			IP:       parts[1],
 			Ping:     parts[2],
-			Download: fmt.Sprintf("%.1f Mbps", mbps),
+			Download: "N/A",
 		})
 	}
 }
@@ -236,11 +230,14 @@ func (m Model) View() string {
 	kernelStr := m.sysStats.Kernel
 	if kernelStr == "" { kernelStr = "Unknown Kernel" }
 	
-	header := fmt.Sprintf("%s    %s    Kernel %s    SSH %s    %s    %s    %s",
+	pingStr := "--"
+	if m.netInfo != nil { pingStr = m.netInfo.Ping }
+
+	header := fmt.Sprintf("%s    %s    Kernel %s    Ping %s    %s    %s    %s",
 		headerStatus,
 		primary.Render(osStr),
 		primary.Render(kernelStr),
-		primary.Render("<10ms"),
+		primary.Render(pingStr),
 		hostName,
 		primary.Render(m.sysStats.Uptime+" Uptime"),
 		accent.Render(time.Now().Format("15:04:05")),
@@ -294,8 +291,8 @@ func (m Model) View() string {
 	netDownStr := "↓ 0.0 MB/s"
 	netUpStr := "↑ 0.0 MB/s"
 	if len(m.netDownHistory) > 0 {
-		lastDown := m.netDownHistory[len(m.netDownHistory)-1] / 100.0 * 20.0
-		lastUp := m.netUpHistory[len(m.netUpHistory)-1] / 100.0 * 10.0
+		lastDown := m.netDownHistory[len(m.netDownHistory)-1] / 8.0
+		lastUp := m.netUpHistory[len(m.netUpHistory)-1] / 8.0
 		netDownStr = fmt.Sprintf("↓ %.1f MB/s", lastDown)
 		netUpStr = fmt.Sprintf("↑ %.1f MB/s", lastUp)
 	}
@@ -334,8 +331,18 @@ func (m Model) View() string {
 	if m.sysStats.CPUPercent < 80 { healthContent += success.Render("✓") + " CPU healthy\n" } else { healthContent += warning.Render("⚠") + " CPU high load\n" }
 	if m.sysStats.DiskPercent < 80 { healthContent += success.Render("✓") + " Disk healthy\n" } else { healthContent += warning.Render("⚠") + " Disk nearing capacity\n" }
 	if failedServices == 0 { healthContent += success.Render("✓") + " Services healthy\n" } else { healthContent += errorStyle.Render("⚠") + " Services failing\n" }
-	healthContent += success.Render("✓") + " SSH hardened\n"
-	healthContent += success.Render("✓") + " Firewall enabled"
+	
+	if len(m.payload.Network.Interfaces) > 0 { 
+		healthContent += success.Render("✓") + " Network responding\n" 
+	} else { 
+		healthContent += warning.Render("⚠") + " Network degraded\n" 
+	}
+	
+	if m.payload.Docker.Containers > 0 { 
+		healthContent += success.Render("✓") + " Docker engine active" 
+	} else { 
+		healthContent += dim.Render("○") + " No containers running" 
+	}
 
 	healthCard := boxStyle.Copy().Width(halfWidth).Render(
 		bold.Render("Server Health") + "\n\n" + healthContent,
@@ -371,7 +378,7 @@ func (m Model) View() string {
 		"    ",
 		lipgloss.JoinVertical(lipgloss.Left, 
 			dim.Render("Failed Svcs:  ") + errorStyle.Render(fmt.Sprintf("%d", failedServices)),
-			dim.Render("Logged users: ") + primary.Render("1"),
+			dim.Render("Processes:    ") + primary.Render(fmt.Sprintf("%d", len(m.payload.Services))),
 			dim.Render("Public IP:    ") + info.Render(publicIP),
 			dim.Render("Open Ports:   ") + primary.Render(openPorts),
 		),
@@ -385,9 +392,21 @@ func (m Model) View() string {
 
 	// 5. Activity Feed
 	activityContent := ""
-	for i, act := range m.recentActivity {
-		ts := time.Now().Add(time.Duration(-i) * time.Minute).Format("15:04")
-		activityContent += dim.Render(ts) + "  " + act + "\n"
+	lines := strings.Split(strings.TrimSpace(m.payload.Logs), "\n")
+	added := 0
+	for i := len(lines) - 1; i >= 0 && added < 4; i-- {
+		if lines[i] != "" {
+			l := lines[i]
+			if len(l) > 60 { l = l[:57] + "..." }
+			activityContent += dim.Render(time.Now().Format("15:04")) + "  " + l + "\n"
+			added++
+		}
+	}
+	if added == 0 {
+		for i, act := range m.recentActivity {
+			ts := time.Now().Add(time.Duration(-i) * time.Minute).Format("15:04")
+			activityContent += dim.Render(ts) + "  " + act + "\n"
+		}
 	}
 	activityCard := boxStyle.Copy().Width(halfWidth).Render(
 		bold.Render("Recent Activity") + "\n\n" + activityContent,

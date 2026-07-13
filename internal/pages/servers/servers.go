@@ -13,6 +13,7 @@ import (
 
 	"main/internal/components"
 	"main/internal/config"
+	"main/internal/pages"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
@@ -22,7 +23,16 @@ type mode int
 const (
 	modeList mode = iota
 	modeForm
+	modeBulkAction
 )
+
+type BulkJob struct {
+	ServerIdx int
+	Status    string
+	Output    string
+	Done      bool
+	Success   bool
+}
 
 type Model struct {
 	servers []config.ServerConfig
@@ -33,6 +43,11 @@ type Model struct {
 	currentMode mode
 	inputs      []textinput.Model
 	focusIndex  int
+
+	selected    map[int]bool
+	bulkCommand string
+	bulkJobs    []*BulkJob
+	bulkInput   textinput.Model
 }
 
 func New() Model {
@@ -41,12 +56,20 @@ func New() Model {
 		cfg.Servers = []config.ServerConfig{}
 	}
 
+	bInput := textinput.New()
+	bInput.Placeholder = "Command to run (e.g. apt update, systemctl restart nginx)"
+	bInput.Focus()
+	bInput.CharLimit = 256
+	bInput.Width = 50
+
 	m := Model{
 		servers:     cfg.Servers,
 		cursor:      0,
-		status:      "Select a server (Up/Down arrows, Enter to connect)",
+		status:      "Select server (Enter), Multi-select (Space), Bulk action (B)",
 		currentMode: modeList,
 		inputs:      make([]textinput.Model, 5),
+		selected:    make(map[int]bool),
+		bulkInput:   bInput,
 	}
 
 	var t textinput.Model
@@ -149,6 +172,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		if m.currentMode == modeBulkAction {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				m.currentMode = modeList
+				m.bulkJobs = nil
+				m.bulkInput.SetValue("")
+				return m, nil
+			case "enter":
+				if m.bulkJobs != nil {
+					return m, nil
+				}
+				return m.startBulkExecution()
+			default:
+				if m.bulkJobs == nil {
+					var cmd tea.Cmd
+					m.bulkInput, cmd = m.bulkInput.Update(msg)
+					return m, cmd
+				}
+				return m, nil
+			}
+		}
+
 		// List Mode
 		switch msg.String() {
 		case "up", "k":
@@ -159,6 +204,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor < len(m.servers) { // Allow cursor to reach the 'Add New' button
 				m.cursor++
 			}
+		case " ":
+			if m.cursor < len(m.servers) {
+				m.selected[m.cursor] = !m.selected[m.cursor]
+			}
+		case "b", "B":
+			hasSelected := false
+			for _, v := range m.selected {
+				if v { hasSelected = true }
+			}
+			if hasSelected {
+				m.currentMode = modeBulkAction
+				m.bulkInput.Focus()
+				m.bulkJobs = nil
+			}
 		case "enter":
 			if m.cursor == len(m.servers) {
 				m.currentMode = modeForm
@@ -167,6 +226,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.instantConnect()
 		}
 
+	case bulkJobResult:
+		var cmd tea.Cmd
+		for _, j := range m.bulkJobs {
+			if j.ServerIdx == msg.serverIdx {
+				j.Done = true
+				j.Success = msg.success
+				j.Output = msg.output
+				
+				sName := m.servers[j.ServerIdx].Name
+				
+				if j.Success {
+					j.Status = "Completed"
+					cmd = func() tea.Msg {
+						return pages.LogActivityMsg{Message: fmt.Sprintf("Bulk action on %s completed successfully", sName)}
+					}
+				} else {
+					j.Status = "Failed"
+					cmd = func() tea.Msg {
+						return pages.LogActivityMsg{Message: fmt.Sprintf("Bulk action on %s failed", sName)}
+					}
+				}
+			}
+		}
+		return m, cmd
 	case error:
 		m.status = msg.Error()
 		return m, nil
@@ -176,6 +259,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+type bulkJobResult struct {
+	serverIdx int
+	success   bool
+	output    string
+}
+
+func (m *Model) startBulkExecution() (tea.Model, tea.Cmd) {
+	cmdStr := m.bulkInput.Value()
+	if cmdStr == "" {
+		return *m, nil
+	}
+
+	m.bulkCommand = cmdStr
+	m.bulkJobs = []*BulkJob{}
+	var cmds []tea.Cmd
+
+	for i, s := range m.servers {
+		if m.selected[i] {
+			job := &BulkJob{
+				ServerIdx: i,
+				Status:    "Running...",
+			}
+			m.bulkJobs = append(m.bulkJobs, job)
+
+			serverCfg := s
+			idx := i
+			cmds = append(cmds, func() tea.Msg {
+				client, err := sshlib.Connect(serverCfg.Host, serverCfg.Port, serverCfg.User, serverCfg.Password, serverCfg.KeyPath)
+				if err != nil {
+					return bulkJobResult{serverIdx: idx, success: false, output: err.Error()}
+				}
+				defer client.Close()
+				out, err := client.Run(cmdStr)
+				if err != nil {
+					return bulkJobResult{serverIdx: idx, success: false, output: err.Error() + "\n" + out}
+				}
+				return bulkJobResult{serverIdx: idx, success: true, output: out}
+			})
+		}
+	}
+	return *m, tea.Batch(cmds...)
 }
 
 func (m Model) IsInputActive() bool {
@@ -211,6 +337,65 @@ func (m Model) View() string {
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim
 
+	if m.currentMode == modeBulkAction {
+		var b strings.Builder
+		b.WriteString(components.Title("FLEET-WIDE BULK ACTION") + "\n\n")
+
+		if m.bulkJobs == nil {
+			// Input phase
+			b.WriteString(m.bulkInput.View() + "\n\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("Press Enter to execute across all selected servers. ESC to cancel."))
+			return components.Card(b.String(), 90)
+		}
+
+		// Execution phase
+		successCount := 0
+		failCount := 0
+		totalDone := 0
+		for _, j := range m.bulkJobs {
+			if j.Done {
+				totalDone++
+				if j.Success {
+					successCount++
+				} else {
+					failCount++
+				}
+			}
+		}
+
+		header := fmt.Sprintf("Summary: %d/%d completed. %d succeeded, %d failed.\n\n", totalDone, len(m.bulkJobs), successCount, failCount)
+		b.WriteString(lipgloss.NewStyle().Bold(true).Render(header))
+
+		for _, j := range m.bulkJobs {
+			sName := m.servers[j.ServerIdx].Name
+			statusStr := ""
+			if !j.Done {
+				statusStr = lipgloss.NewStyle().Foreground(theme.Current.Warning).Render("⏳ Running...")
+			} else if j.Success {
+				statusStr = lipgloss.NewStyle().Foreground(theme.Current.Success).Render("✓ Completed")
+			} else {
+				statusStr = lipgloss.NewStyle().Foreground(theme.Current.Error).Render("✗ Failed")
+			}
+			b.WriteString(fmt.Sprintf("%-20s %s\n", sName, statusStr))
+			if j.Done && !j.Success {
+				errLines := strings.Split(j.Output, "\n")
+				for k, l := range errLines {
+					if l != "" && k < 5 { // limit error output lines
+						b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("  │ " + l) + "\n")
+					}
+				}
+			}
+		}
+		
+		if totalDone == len(m.bulkJobs) {
+			b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("\nPress ESC to return."))
+		} else {
+			b.WriteString(lipgloss.NewStyle().Foreground(dimColor).Render("\nExecuting..."))
+		}
+		
+		return components.Card(b.String(), 90)
+	}
+
 	if m.currentMode == modeForm {
 		var b strings.Builder
 		b.WriteString(components.Title("ADD NEW SERVER") + "\n\n")
@@ -238,11 +423,13 @@ func (m Model) View() string {
 	items += components.Title("REGISTERED SERVERS") + "\n\n"
 
 	for i, s := range m.servers {
-		cursor := "  "
+		cursor := " [ ] "
+		if m.selected[i] { cursor = " [x] " }
+		
 		style := lipgloss.NewStyle().Foreground(theme.Current.Text)
 		
 		if m.cursor == i {
-			cursor = "▶ "
+			if m.selected[i] { cursor = "▶[x] " } else { cursor = "▶[ ] " }
 			style = lipgloss.NewStyle().Foreground(primaryColor).Bold(true)
 		}
 

@@ -15,41 +15,46 @@ func NewEngine(c *sshlib.Client) *Engine {
 }
 
 type App struct {
-	Name    string `json:"name"`
-	Runtime string `json:"runtime"`
-	PID     string `json:"pid"`
-	Port    string `json:"port"`
-	Status  string `json:"status"`
+	Name    string  `json:"name"`
+	Runtime string  `json:"runtime"`
+	PID     string  `json:"pid"`
+	CPU     float64 `json:"cpu"`
+	Mem     float64 `json:"mem"`
+	User    string  `json:"user"`
 }
 
 // DetectApps scans the server for common runtimes running on listening ports
 func (e *Engine) DetectApps() ([]App, error) {
 	// A basic detection script that parses active ports and maps them to runtimes
+	// Use top -b -n 2 to get real CPU usage deltas over 0.5s, rather than lifetime averages
 	script := `
-	ps -aux | awk 'NR>1 {
-		user=$1; pid=$2; cpu=$3; mem=$4;
-		command=$11;
-		for(i=12; i<=NF; i++) command=command " " $i;
-		print user, pid, cpu, mem, command
-	}' | head -n 100 | while read user pid cpu mem command; do
-		runtime="System"
-		case "$command" in
-			*node*|*server.js*) runtime="Node.js" ;;
-			*python*) runtime="Python" ;;
-			*java*) runtime="Java" ;;
-			*go*) runtime="Go" ;;
-			*docker*) runtime="Docker" ;;
-			*pm2*|*PM2*) runtime="PM2" ;;
-			*sshd*) runtime="SSH" ;;
-			*bash*|*sh*) runtime="Shell" ;;
-		esac
+	LC_ALL=C COLUMNS=512 top -c -b -d 0.5 -n 2 | awk '
+	/^top -/ {iter++}
+	iter==2 && $1 ~ /^[0-9]+$/ {
+		pid = $1
+		user = $2
+		cpu = $9
+		mem = $10
+		cmd = $12
+		for(i=13; i<=NF; i++) cmd = cmd " " $i
 		
-		# Escape quotes
-		command=$(echo "$command" | sed 's/"/\\"/g' | cut -c 1-50)
+		runtime = "System"
+		if (cmd ~ /node/ || cmd ~ /server\.js/) runtime = "Node.js"
+		else if (cmd ~ /python/) runtime = "Python"
+		else if (cmd ~ /java/) runtime = "Java"
+		else if (cmd ~ /go /) runtime = "Go"
+		else if (cmd ~ /docker/) runtime = "Docker"
+		else if (cmd ~ /pm2/ || cmd ~ /PM2/) runtime = "PM2"
+		else if (cmd ~ /sshd/) runtime = "SSH"
+		else if (cmd ~ /bash/ || cmd ~ /sh/) runtime = "Shell"
 		
-		# Send as JSON
-		echo "{\"name\":\"$command\",\"runtime\":\"$runtime\",\"pid\":\"$pid\",\"port\":\"$cpu% CPU\",\"status\":\"$user\"}"
-	done
+		# JSON escape
+		gsub(/\\/, "\\\\", cmd)
+		gsub(/"/, "\\\"", cmd)
+		
+		printf "{\"name\":\"%s\",\"runtime\":\"%s\",\"pid\":\"%s\",\"cpu\":%s,\"mem\":%s,\"user\":\"%s\"}\n", cmd, runtime, pid, cpu, mem, user
+	}
+	' | head -n 100
 	`
 	out, err := e.client.Run(script)
 	if err != nil {

@@ -19,6 +19,11 @@ type RunRemoteCmdMsg struct {
 	Command string
 }
 
+// LogActivityMsg is broadcast to append an event to the Mission Control activity feed.
+type LogActivityMsg struct {
+	Message string
+}
+
 // RunRemoteQueryMsg allows pages to execute a command and handle the response async
 type RunRemoteQueryMsg struct {
 	Command         string

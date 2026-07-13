@@ -35,3 +35,38 @@ func (e *Engine) FetchDockerLogs(containerID string, lines int) (string, error) 
 func (e *Engine) FetchFileLogs(filepath string, lines int) (string, error) {
 	return e.client.Run(fmt.Sprintf("tail -n %d %s", lines, filepath))
 }
+
+// FetchServiceLogs fetches the latest lines for a specific systemd service
+func (e *Engine) FetchServiceLogs(service string, lines int) (string, error) {
+	return e.client.Run(fmt.Sprintf("journalctl -u %s -n %d --no-pager", service, lines))
+}
+
+// DiscoverSources fetches available log sources from the remote server
+func (e *Engine) DiscoverSources() ([]string, error) {
+	var sources []string
+	sources = append(sources, "System (journalctl)", "Syslog (/var/log/syslog)")
+
+	// Docker containers
+	out, err := e.client.Run("docker ps --format '{{.Names}}'")
+	if err == nil && out != "" {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				sources = append(sources, "[Docker] "+strings.Trim(line, "'\""))
+			}
+		}
+	}
+
+	// Systemd services
+	out, err = e.client.Run("systemctl list-units --type=service --state=running --no-pager --plain | awk '{print $1}' | grep .service")
+	if err == nil && out != "" {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				sources = append(sources, "[Service] "+line)
+			}
+		}
+	}
+
+	return sources, nil
+}
