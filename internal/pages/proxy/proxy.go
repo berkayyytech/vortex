@@ -55,6 +55,10 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+func (m Model) IsInputActive() bool {
+	return m.state == StateEditing
+}
+
 type detectResultMsg struct {
 	ptype proxyengine.ProxyType
 	sites []proxyengine.Site

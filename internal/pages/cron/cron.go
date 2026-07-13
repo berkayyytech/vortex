@@ -194,12 +194,23 @@ func (m *Model) updateFocus() []tea.Cmd {
 	return cmds
 }
 
-// humanizeCron does a very basic translation of common cron syntax
 func humanizeCron(schedule string) string {
-	if schedule == "* * * * *" { return "Every minute" }
-	if schedule == "0 * * * *" { return "Every hour" }
-	if schedule == "0 0 * * *" { return "Every day at midnight" }
-	if schedule == "0 0 * * 0" { return "Every Sunday at midnight" }
+	val := strings.TrimSpace(schedule)
+	parts := strings.Fields(val)
+	if val == "* * * * *" { return "Every minute" }
+	if val == "0 * * * *" { return "Every hour at minute 0" }
+	if val == "0 0 * * *" { return "Every day at midnight" }
+	if val == "0 0 * * 0" { return "Every Sunday at midnight" }
+	
+	if len(parts) == 5 {
+		min, hr, dom, mon, dow := parts[0], parts[1], parts[2], parts[3], parts[4]
+		if dom == "*" && mon == "*" && dow == "*" && hr != "*" && min != "*" && !strings.Contains(hr, ",") && !strings.Contains(min, ",") {
+			return fmt.Sprintf("Every day at %02s:%02s", hr, min)
+		} else if dom == "*" && mon == "*" && hr != "*" && min != "*" && dow != "*" && !strings.Contains(dow, ",") {
+			days := map[string]string{"0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday", "5": "Friday", "6": "Saturday", "7": "Sunday"}
+			if d, ok := days[dow]; ok { return fmt.Sprintf("Every %s at %02s:%02s", d, hr, min) }
+		}
+	}
 	return schedule
 }
 

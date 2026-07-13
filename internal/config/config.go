@@ -90,18 +90,27 @@ type BackupsConfig struct {
 
 type KeybindsConfig map[string]string
 
+type UptimeMonitorConfig struct {
+	ID           string `yaml:"id"`
+	Name         string `yaml:"name"`
+	URL          string `yaml:"url"`
+	Type         string `yaml:"type"` // "http" or "ping"
+	IntervalSecs int    `yaml:"interval_secs"`
+}
+
 type Config struct {
-	Servers       []ServerConfig      `yaml:"servers"`
-	General       GeneralConfig       `yaml:"general"`
-	Appearance    AppearanceConfig    `yaml:"appearance"`
-	SSH           SSHConfig           `yaml:"ssh"`
-	Monitoring    MonitoringConfig    `yaml:"monitoring"`
-	Docker        DockerConfig        `yaml:"docker"`
-	Logs          LogsConfig          `yaml:"logs"`
-	Security      SecurityConfig      `yaml:"security"`
-	Notifications NotificationsConfig `yaml:"notifications"`
-	Backups       BackupsConfig       `yaml:"backups"`
-	Keybinds      KeybindsConfig      `yaml:"keybinds"`
+	Servers       []ServerConfig          `yaml:"servers"`
+	General       GeneralConfig           `yaml:"general"`
+	Appearance    AppearanceConfig        `yaml:"appearance"`
+	SSH           SSHConfig               `yaml:"ssh"`
+	Monitoring    MonitoringConfig        `yaml:"monitoring"`
+	Docker        DockerConfig            `yaml:"docker"`
+	Logs          LogsConfig              `yaml:"logs"`
+	Security      SecurityConfig          `yaml:"security"`
+	Notifications NotificationsConfig     `yaml:"notifications"`
+	Backups       BackupsConfig           `yaml:"backups"`
+	Keybinds      KeybindsConfig          `yaml:"keybinds"`
+	UptimeTargets []UptimeMonitorConfig   `yaml:"uptime_targets"`
 }
 
 func GetDefaultConfig() Config {
@@ -193,6 +202,22 @@ func GetDefaultConfig() Config {
 			"Uptime": "m",
 			"Backup": "k",
 			"Command Palette": "ctrl+p",
+		},
+		UptimeTargets: []UptimeMonitorConfig{
+			{
+				ID:           "1",
+				Name:         "Cloudflare DNS",
+				URL:          "https://1.1.1.1",
+				Type:         "ping",
+				IntervalSecs: 5,
+			},
+			{
+				ID:           "2",
+				Name:         "Example Web",
+				URL:          "https://example.com",
+				Type:         "http",
+				IntervalSecs: 5,
+			},
 		},
 	}
 }

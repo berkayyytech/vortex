@@ -54,6 +54,10 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+func (m Model) IsInputActive() bool {
+	return m.mode == ModeConfig && m.focusIndex < 4
+}
+
 type logMsg string
 type deployDoneMsg struct{}
 

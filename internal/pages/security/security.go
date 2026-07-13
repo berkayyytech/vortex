@@ -79,6 +79,10 @@ func New() Model {
 
 func (m Model) Init() tea.Cmd { return textinput.Blink }
 
+func (m Model) IsInputActive() bool {
+	return m.state == stateAddRule || m.state == stateDeleteRule || m.state == stateBanIP || m.state == stateUnbanIP
+}
+
 type auditReportMsg *secengine.FullAuditReport
 
 func runFullAudit(engine *secengine.Engine) tea.Cmd {

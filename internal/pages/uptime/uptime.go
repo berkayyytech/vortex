@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"main/internal/components"
+	"main/internal/config"
 	uptimeEngine "main/internal/engine/uptime"
 	"main/internal/pages"
 	"main/internal/theme"
@@ -20,21 +21,6 @@ type Model struct {
 
 func init() {
 	pages.Register(New())
-	
-	uptimeEngine.AddTarget(&uptimeEngine.MonitorTarget{
-		ID:       "1",
-		Name:     "Cloudflare DNS",
-		URL:      "https://1.1.1.1",
-		Type:     uptimeEngine.PingCheck,
-		Interval: 5 * time.Second,
-	})
-	uptimeEngine.AddTarget(&uptimeEngine.MonitorTarget{
-		ID:       "2",
-		Name:     "Example Web",
-		URL:      "https://example.com",
-		Type:     uptimeEngine.HTTPCheck,
-		Interval: 5 * time.Second,
-	})
 }
 
 func New() Model {
@@ -42,6 +28,19 @@ func New() Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	for _, target := range config.CurrentConfig.UptimeTargets {
+		tType := uptimeEngine.HTTPCheck
+		if target.Type == "ping" {
+			tType = uptimeEngine.PingCheck
+		}
+		uptimeEngine.AddTarget(&uptimeEngine.MonitorTarget{
+			ID:       target.ID,
+			Name:     target.Name,
+			URL:      target.URL,
+			Type:     tType,
+			Interval: time.Duration(target.IntervalSecs) * time.Second,
+		})
+	}
 	return tickCmd()
 }
 

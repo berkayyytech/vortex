@@ -3,6 +3,7 @@ package backup
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -53,7 +54,13 @@ func New() Model {
 	}
 }
 
-func (m Model) Init() tea.Cmd { return textinput.Blink }
+func (m Model) Init() tea.Cmd {
+	return textinput.Blink
+}
+
+func (m Model) IsInputActive() bool {
+	return m.state != StateList
+}
 
 type backupsLoadedMsg []backupengine.BackupJob
 type backupCompleteMsg struct {
@@ -308,7 +315,25 @@ func (m Model) View() string {
 		case StateConfigRetention:
 			prompt = lipgloss.NewStyle().Foreground(theme.Current.Primary).Render("New retention (days): ")
 		}
-		inputView = "\n\n" + prompt + "\n" + m.textInput.View() + "\n(Press Enter to confirm, Esc to cancel)"
+		
+		translation := ""
+		if m.state == StateConfigSchedule {
+			val := strings.TrimSpace(m.textInput.Value())
+			parts := strings.Fields(val)
+			desc := "Custom schedule or typing..."
+			if val == "* * * * *" { desc = "Every minute" } else if val == "0 * * * *" { desc = "Every hour at minute 0" } else if val == "0 0 * * *" { desc = "Every day at midnight" } else if len(parts) == 5 {
+				min, hr, dom, mon, dow := parts[0], parts[1], parts[2], parts[3], parts[4]
+				if dom == "*" && mon == "*" && dow == "*" && hr != "*" && min != "*" && !strings.Contains(hr, ",") && !strings.Contains(min, ",") {
+					desc = fmt.Sprintf("Every day at %02s:%02s", hr, min)
+				} else if dom == "*" && mon == "*" && hr != "*" && min != "*" && dow != "*" && !strings.Contains(dow, ",") {
+					days := map[string]string{"0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday", "5": "Friday", "6": "Saturday", "7": "Sunday"}
+					if d, ok := days[dow]; ok { desc = fmt.Sprintf("Every %s at %02s:%02s", d, hr, min) }
+				}
+			}
+			translation = "\n" + lipgloss.NewStyle().Foreground(theme.Current.Success).Render("Translation: " + desc)
+		}
+
+		inputView = "\n\n" + prompt + "\n" + m.textInput.View() + translation + "\n(Press Enter to confirm, Esc to cancel)"
 	}
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [B] Backup  [L] Restore  [D] Delete  [R] Refresh\nConfig:   [C] Schedule  [P] Path  [T] Retention")
