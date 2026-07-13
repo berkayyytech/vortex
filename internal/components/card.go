@@ -2,13 +2,18 @@ package components
 
 import (
 	"github.com/charmbracelet/lipgloss"
+	"main/internal/config"
 	"main/internal/theme"
 )
 
-// Card creates a standard bordered box for UI content.
 func Card(content string, width int) string {
+	bStyle := lipgloss.RoundedBorder()
+	if config.CurrentConfig.Appearance.BorderStyle == "square" {
+		bStyle = lipgloss.NormalBorder()
+	}
+
 	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
+		Border(bStyle).
 		BorderForeground(theme.Current.Dim).
 		Padding(1, 3).
 		Margin(1, 0)

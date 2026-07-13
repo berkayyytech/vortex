@@ -67,13 +67,13 @@ func (e *Engine) ListDirectory(path string) ([]FileInfo, error) {
 }
 
 func (e *Engine) ReadFile(path string) (string, error) {
-	return e.client.Run(fmt.Sprintf("cat %q", path))
+	return e.client.Run(fmt.Sprintf("sudo cat %q", path))
 }
 
 func (e *Engine) WriteFile(path, content string) error {
 	// escape single quotes for shell
 	escaped := strings.ReplaceAll(content, "'", "'\"'\"'")
-	_, err := e.client.Run(fmt.Sprintf("echo '%s' > %q", escaped, path))
+	_, err := e.client.Run(fmt.Sprintf("echo '%s' | sudo tee %q > /dev/null", escaped, path))
 	return err
 }
 

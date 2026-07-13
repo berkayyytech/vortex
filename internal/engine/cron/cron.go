@@ -94,18 +94,15 @@ func parseSystemCrontabOutput(output string) []CronJob {
 }
 
 func (e *Engine) AddJob(schedule, cmd string) error {
-	// Echo the new job into crontab
-	// This is a naive implementation; ideally, we'd use a temporary file.
-	// For simplicity, we just append to the current crontab: (crontab -l 2>/dev/null; echo "schedule cmd") | crontab -
-	fullCmd := fmt.Sprintf("(crontab -l 2>/dev/null; echo \"%s %s\") | crontab -", schedule, cmd)
+	escapedLine := strings.ReplaceAll(fmt.Sprintf("%s %s", schedule, cmd), "\"", "\\\"")
+	fullCmd := fmt.Sprintf(`tmp=$(mktemp) && crontab -l > "$tmp" 2>/dev/null; echo "%s" >> "$tmp" && crontab "$tmp" && rm -f "$tmp"`, escapedLine)
 	_, err := e.client.Run(fullCmd)
 	return err
 }
 
 func (e *Engine) DeleteJobRaw(raw string) error {
-	// Safely delete a specific raw cron string from the user's crontab using grep -v
 	escapedRaw := strings.ReplaceAll(raw, "\"", "\\\"")
-	fullCmd := fmt.Sprintf("crontab -l | grep -v -F \"%s\" | crontab -", escapedRaw)
+	fullCmd := fmt.Sprintf(`tmp=$(mktemp) && crontab -l | grep -v -F "%s" > "$tmp" && crontab "$tmp" && rm -f "$tmp"`, escapedRaw)
 	_, err := e.client.Run(fullCmd)
 	return err
 }

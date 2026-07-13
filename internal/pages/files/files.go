@@ -79,6 +79,10 @@ func (m Model) Init() tea.Cmd {
 	return nil
 }
 
+func (m Model) IsInputActive() bool {
+	return m.state == StateEditing || m.state == StatePrompting
+}
+
 type filesResponseMsg struct {
 	files []fileengine.FileInfo
 	err   error

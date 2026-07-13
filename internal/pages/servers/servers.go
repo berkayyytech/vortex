@@ -1,10 +1,7 @@
 package servers
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -464,8 +461,6 @@ func (m Model) Title() string { return "Servers" }
 func (m Model) Icon() string { return "🖥️" }
 
 func saveConfig(servers []config.ServerConfig) {
-	home, _ := os.UserHomeDir()
-	configPath := filepath.Join(home, ".vortex", "config.json")
-	data, _ := json.MarshalIndent(config.Config{Servers: servers}, "", "  ")
-	os.WriteFile(configPath, data, 0644)
+	config.CurrentConfig.Servers = servers
+	config.SaveConfig(config.CurrentConfig)
 }

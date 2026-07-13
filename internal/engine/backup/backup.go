@@ -25,13 +25,18 @@ type BackupJob struct {
 }
 
 // CreateBackup creates a tar.gz archive of the target directory on the remote server
-func (e *Engine) CreateBackup(targetPath string, backupType string) (*BackupJob, error) {
+func (e *Engine) CreateBackup(targetPath string, destPath string, backupType string) (*BackupJob, error) {
+	// Ensure destPath exists
+	_, err := e.client.Run(fmt.Sprintf("mkdir -p %s", destPath))
+	if err != nil {
+		return &BackupJob{Status: "Failed"}, err
+	}
+
 	timestamp := time.Now().Format("20060102_150405")
-	archiveName := fmt.Sprintf("/tmp/vortex_backup_%s.tar.gz", timestamp)
+	archiveName := fmt.Sprintf("%s/vortex_backup_%s.tar.gz", strings.TrimRight(destPath, "/"), timestamp)
 	
-	// Run tar command asynchronously or wait (simplification: wait for small dirs)
 	cmd := fmt.Sprintf("tar -czf %s %s 2>/dev/null", archiveName, targetPath)
-	_, err := e.client.Run(cmd)
+	_, err = e.client.Run(cmd)
 	if err != nil {
 		return &BackupJob{Status: "Failed"}, err
 	}
@@ -48,9 +53,10 @@ func (e *Engine) CreateBackup(targetPath string, backupType string) (*BackupJob,
 	}, nil
 }
 
-// ListBackups scans the /tmp directory for vortex backups
-func (e *Engine) ListBackups() ([]BackupJob, error) {
-	out, err := e.client.Run("ls -lh /tmp/vortex_backup_*.tar.gz 2>/dev/null | awk '{print $5, $9}'")
+// ListBackups scans the destination directory for vortex backups
+func (e *Engine) ListBackups(destPath string) ([]BackupJob, error) {
+	cmd := fmt.Sprintf("ls -lh %s/vortex_backup_*.tar.gz 2>/dev/null | awk '{print $5, $9}'", strings.TrimRight(destPath, "/"))
+	out, err := e.client.Run(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -86,4 +92,13 @@ func (e *Engine) DeleteBackup(id string) error {
 func (e *Engine) RestoreBackup(id string) error {
 	_, err := e.client.Run(fmt.Sprintf("tar -xzf %s -C /", id))
 	return err
+}
+
+// GetStorageUsage returns the total storage used by the backups in destPath
+func (e *Engine) GetStorageUsage(destPath string) (string, error) {
+	out, err := e.client.Run(fmt.Sprintf("du -sh %s 2>/dev/null | cut -f1", destPath))
+	if err != nil || strings.TrimSpace(out) == "" {
+		return "0B", err
+	}
+	return strings.TrimSpace(out), nil
 }

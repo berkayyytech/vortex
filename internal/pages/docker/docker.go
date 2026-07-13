@@ -8,10 +8,12 @@ import (
 
 	"main/internal/agent"
 	"main/internal/components"
+	"main/internal/config"
 	docklib "main/internal/docker"
 	dockerengine "main/internal/engine/docker"
-	"main/internal/theme"
+	"main/internal/pages"
 	sshlib "main/internal/ssh"
+	"main/internal/theme"
 )
 
 type OpenDockerShellMsg struct {
@@ -22,6 +24,8 @@ type Model struct {
 	dockerStats docklib.DockerStats
 	cursor      int
 	engine      *dockerengine.Engine
+	confirming  bool
+	pendingAction string
 }
 
 func New() Model {
@@ -52,19 +56,55 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r", "R":
 			if len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
+				if config.CurrentConfig.Docker.ConfirmActions && !m.confirming {
+					m.confirming = true
+					m.pendingAction = "restart"
+					return m, nil
+				}
 				c := m.dockerStats.ContainersList[m.cursor]
+				m.confirming = false
 				return m, func() tea.Msg {
 					m.engine.RestartContainer(c.ID)
-					return nil
+					return pages.LogActivityMsg{Message: "Restarted Docker container " + c.Name}
 				}
 			}
 		case "s", "S":
 			if len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
+				if config.CurrentConfig.Docker.ConfirmActions && !m.confirming {
+					m.confirming = true
+					m.pendingAction = "stop"
+					return m, nil
+				}
 				c := m.dockerStats.ContainersList[m.cursor]
+				m.confirming = false
 				return m, func() tea.Msg {
 					m.engine.StopContainer(c.ID)
+					return pages.LogActivityMsg{Message: "Stopped Docker container " + c.Name}
+				}
+			}
+		case "y", "Y":
+			if m.confirming && len(m.dockerStats.ContainersList) > 0 && m.engine != nil {
+				c := m.dockerStats.ContainersList[m.cursor]
+				action := m.pendingAction
+				m.confirming = false
+				m.pendingAction = ""
+				return m, func() tea.Msg {
+					if action == "restart" {
+						m.engine.RestartContainer(c.ID)
+						return pages.LogActivityMsg{Message: "Restarted Docker container " + c.Name}
+					}
+					if action == "stop" {
+						m.engine.StopContainer(c.ID)
+						return pages.LogActivityMsg{Message: "Stopped Docker container " + c.Name}
+					}
 					return nil
 				}
+			}
+		case "n", "N", "esc":
+			if m.confirming {
+				m.confirming = false
+				m.pendingAction = ""
+				return m, nil
 			}
 		}
 
@@ -114,6 +154,9 @@ func (m Model) View() string {
 	}
 
 	controls := lipgloss.NewStyle().Foreground(theme.Current.Dim).Render("\nControls: [up/down] Navigate  [Enter] Connect  [R] Restart  [S] Stop")
+	if m.confirming {
+		controls = lipgloss.NewStyle().Foreground(theme.Current.Warning).Bold(true).Render(fmt.Sprintf("\nAre you sure you want to %s this container? (Y/N)", m.pendingAction))
+	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		components.Title("DOCKER ENGINE"),

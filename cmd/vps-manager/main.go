@@ -21,6 +21,15 @@ import (
 	"main/internal/pages/services"
 	"main/internal/pages/settings"
 	"main/internal/pages/terminal"
+	"main/internal/pages/users"
+	"main/internal/pages/alerts"
+	"main/internal/pages/audit"
+	"main/internal/pages/db"
+	"main/internal/pages/proxy"
+	"main/internal/pages/secrets"
+	"main/internal/pages/deploy"
+	"main/internal/pages/snapshots"
+	"main/internal/pages/uptime"
 
 	"os/exec"
 	"strings"
@@ -83,6 +92,15 @@ func initialModel() Router {
 			settings.New(),
 			cron.New(),
 			certs.New(),
+			users.New(),
+			alerts.New(),
+			audit.New(),
+			db.New(),
+			proxy.New(),
+			secrets.New(),
+			deploy.New(),
+			snapshots.New(),
+			uptime.New(),
 		},
 		sidebarIdx:  0,
 		activeIdx:   0,
@@ -163,6 +181,57 @@ func initialModel() Router {
 		Action: func() tea.Cmd {
 			return tea.Quit
 		},
+	})
+
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Users & SSH Keys",
+		Description: "Switch to the User Manager view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 13} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Alerts & Webhooks",
+		Description: "Switch to the Alerts view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 14} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Audit Log",
+		Description: "Switch to the Audit Log view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 15} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Database Manager",
+		Description: "Switch to the DB Manager view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 16} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Reverse Proxy",
+		Description: "Switch to the Proxy Config view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 17} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Secrets Manager",
+		Description: "Switch to the Secrets view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 18} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Deployments",
+		Description: "Switch to the Deploy Pipelines view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 19} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Snapshots",
+		Description: "Switch to the Config Snapshots view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 20} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Uptime Monitor",
+		Description: "Switch to the Uptime Monitor view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 21} } },
+	})
+	r.palette.RegisterCommand(components.Command{
+		Name:        "Go to Backups",
+		Description: "Switch to the Backup Manager view",
+		Action: func() tea.Cmd { return func() tea.Msg { return switchTabMsg{idx: 8} } },
 	})
 
 	return r
@@ -256,7 +325,9 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Queue next tick when we successfully receive a payload
-		cmds = append(cmds, sysengine.Tick(5*time.Second))
+		interval := config.CurrentConfig.Monitoring.RefreshInterval
+		if interval < 1 { interval = 1 }
+		cmds = append(cmds, sysengine.Tick(time.Duration(interval)*time.Second))
 
 	case agent.PayloadErrorMsg:
 		r.isFetching = false
@@ -335,7 +406,8 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		switch msg.String() {
+		keyStr := msg.String()
+		switch keyStr {
 		case "g", "G":
 			r.globe.Active = true
 			r.globe.IsEntering = true
@@ -357,7 +429,7 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return r, nil
 		case "ctrl+c":
 			return r, tea.Quit
-		case "ctrl+p":
+		case config.CurrentConfig.Keybinds["Command Palette"]:
 			r.palette.Active = !r.palette.Active
 			return r, nil
 		case "shift+up", "[":
@@ -404,34 +476,91 @@ func (r Router) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if allowGlobalKeys {
-			switch msg.String() {
-			case "esc":
+			keyStr := msg.String()
+			switch keyStr {
+			case config.CurrentConfig.Keybinds["Servers"]:
 				if r.toast.Active {
 					r.toast.Active = false
 					return r, nil
 				}
+				r.sidebarIdx = 0
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 0 } else { r.activeIdx = 0 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Dashboard"]:
 				r.sidebarIdx = 1
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 1 } else { r.activeIdx = 1 }
 				return r, nil
-			case "f":
+			case config.CurrentConfig.Keybinds["Processes"]:
+				r.sidebarIdx = 2
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 2 } else { r.activeIdx = 2 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Docker"]:
+				r.sidebarIdx = 3
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 3 } else { r.activeIdx = 3 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Services"]:
+				r.sidebarIdx = 4
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 4 } else { r.activeIdx = 4 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Files"]:
 				r.sidebarIdx = 5
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 5 } else { r.activeIdx = 5 }
 				return r, nil
-			case "l":
+			case config.CurrentConfig.Keybinds["Logs"]:
 				r.sidebarIdx = 6
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 6 } else { r.activeIdx = 6 }
 				return r, nil
-			case "w":
+			case config.CurrentConfig.Keybinds["Security"]:
 				r.sidebarIdx = 7
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 7 } else { r.activeIdx = 7 }
 				return r, nil
-			case "x":
+			case config.CurrentConfig.Keybinds["Cron"]:
 				r.sidebarIdx = 11
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 11 } else { r.activeIdx = 11 }
 				return r, nil
-			case "c":
+			case config.CurrentConfig.Keybinds["Certs"]:
 				r.sidebarIdx = 12
 				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 12 } else { r.activeIdx = 12 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Users"]:
+				r.sidebarIdx = 13
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 13 } else { r.activeIdx = 13 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Alerts"]:
+				r.sidebarIdx = 14
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 14 } else { r.activeIdx = 14 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Audit"]:
+				r.sidebarIdx = 15
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 15 } else { r.activeIdx = 15 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Database"]:
+				r.sidebarIdx = 16
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 16 } else { r.activeIdx = 16 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Proxy"]:
+				r.sidebarIdx = 17
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 17 } else { r.activeIdx = 17 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Secrets"]:
+				r.sidebarIdx = 18
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 18 } else { r.activeIdx = 18 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Deploy"]:
+				r.sidebarIdx = 19
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 19 } else { r.activeIdx = 19 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Snapshots"]:
+				r.sidebarIdx = 20
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 20 } else { r.activeIdx = 20 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Uptime"]:
+				r.sidebarIdx = 21
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 21 } else { r.activeIdx = 21 }
+				return r, nil
+			case config.CurrentConfig.Keybinds["Backup"]:
+				r.sidebarIdx = 8
+				if r.isSplit && r.activeFocus == 1 { r.splitIdx = 8 } else { r.activeIdx = 8 }
 				return r, nil
 			}
 		}
@@ -491,11 +620,16 @@ func (r Router) View() string {
 	primaryColor := theme.Current.Primary
 	dimColor := theme.Current.Dim
 
+	bStyle := lipgloss.RoundedBorder()
+	if config.CurrentConfig.Appearance.BorderStyle == "square" {
+		bStyle = lipgloss.NormalBorder()
+	}
+
 	sidebarStyle := lipgloss.NewStyle().
 		Width(26).
 		Height(r.height - 5). // Stretch border all the way down to status bar
 		Padding(1, 2).
-		Border(lipgloss.RoundedBorder(), false, true, false, false).
+		Border(bStyle, false, true, false, false).
 		BorderForeground(dimColor)
 
 	contentStyle := lipgloss.NewStyle().
@@ -670,18 +804,32 @@ func (r Router) View() string {
 	finalLayout := lipgloss.JoinVertical(lipgloss.Left, layout, "\n", statusBar)
 
 	// Wallpaper rendering
-	if r.wallpaperOn && r.wallpaper != "" && r.width > 0 && r.height > 0 {
-		return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, finalLayout, 
-			lipgloss.WithWhitespaceChars(r.wallpaper), 
-			lipgloss.WithWhitespaceForeground(lipgloss.Color("235")))
+	wpName := config.CurrentConfig.Appearance.Wallpaper
+	if r.wallpaperOn && wpName != "None" && r.width > 0 && r.height > 0 {
+		var wpChar string
+		switch wpName {
+		case "Stars": wpChar = "* "
+		case "Mountains": wpChar = "▲ "
+		case "Grid": wpChar = "+ "
+		case "Matrix": wpChar = "1 0 "
+		case "Minimal Dots": wpChar = "· "
+		default: wpChar = "  "
+		}
+		
+		// Map opacity (0-100) to a dim color (235-240 for 256 colors, but let's use a standard ANSI dim)
+		// Or we can just use 236 for most subtle. If opacity is 0, we shouldn't draw it.
+		if config.CurrentConfig.Appearance.WallpaperOpacity > 0 {
+			return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, finalLayout, 
+				lipgloss.WithWhitespaceChars(wpChar), 
+				lipgloss.WithWhitespaceForeground(lipgloss.Color("236")))
+		}
 	}
 
 	return lipgloss.Place(r.width, r.height, lipgloss.Center, lipgloss.Center, finalLayout)
 }
 
 func main() {
-	config.InitDefaults()
-	config.LoadSettings()
+	config.InitSettings()
 	theme.SetTheme(config.GetSettingString("appearance.theme"))
 
 	p := tea.NewProgram(initialModel())

@@ -24,7 +24,7 @@ func GetSystemStats() SystemStats {
 	var stats SystemStats
 
 	// CPU
-	cpuPercents, err := cpu.Percent(0, false)
+	cpuPercents, err := cpu.Percent(500*time.Millisecond, false)
 	if err == nil && len(cpuPercents) > 0 {
 		stats.CPUPercent = cpuPercents[0]
 	}

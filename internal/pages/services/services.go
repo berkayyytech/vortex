@@ -10,8 +10,9 @@ import (
 	"main/internal/agent"
 	"main/internal/components"
 	sysengine "main/internal/engine/systemd"
-	sshlib "main/internal/ssh"
+	"main/internal/pages"
 	svclib "main/internal/services"
+	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
 
@@ -42,15 +43,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			if len(m.servicesList) > 0 && m.engine != nil {
 				return m, func() tea.Msg {
-					m.engine.RestartService(m.servicesList[m.cursor].Name)
-					return nil
+					name := m.servicesList[m.cursor].Name
+					m.engine.RestartService(name)
+					return pages.LogActivityMsg{Message: "Restarted service " + name}
 				}
 			}
 		case "s", "S":
 			if len(m.servicesList) > 0 && m.engine != nil {
 				return m, func() tea.Msg {
-					m.engine.StopService(m.servicesList[m.cursor].Name)
-					return nil
+					name := m.servicesList[m.cursor].Name
+					m.engine.StopService(name)
+					return pages.LogActivityMsg{Message: "Stopped service " + name}
 				}
 			}
 		}

@@ -11,6 +11,7 @@ import (
 	"main/internal/agent"
 	"main/internal/components"
 	"main/internal/config"
+	auditengine "main/internal/engine/audit"
 	"main/internal/pages"
 	sshlib "main/internal/ssh"
 	"main/internal/stats"
@@ -40,7 +41,6 @@ type Model struct {
 	netDownHistory []float64
 	netUpHistory   []float64
 
-	recentActivity []string
 	servers        []config.ServerConfig
 	width          int
 	height         int
@@ -50,9 +50,6 @@ func New() Model {
 	cfg, _ := config.LoadConfig()
 	return Model{
 		servers: cfg.Servers,
-		recentActivity: []string{
-			"• System initialized",
-		},
 	}
 }
 
@@ -64,7 +61,11 @@ type statsMsg stats.SystemStats
 type tickMsg time.Time
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second*1, func(t time.Time) tea.Msg {
+	interval := config.CurrentConfig.Monitoring.RefreshInterval
+	if interval < 1 {
+		interval = 1
+	}
+	return tea.Tick(time.Second*time.Duration(interval), func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -83,17 +84,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.client = msg.Client
 		m.activeHost = msg.Host
 		m.activeUser = msg.User
-		m.recentActivity = append([]string{fmt.Sprintf("• SSH login to %s", msg.Host)}, m.recentActivity...)
-		if len(m.recentActivity) > 5 {
-			m.recentActivity = m.recentActivity[:5]
-		}
+		auditengine.GlobalEngine.Append(fmt.Sprintf("SSH login to %s", msg.Host))
 		m.isTesting = true
 		return m, fetchNetworkMeta(m.client)
 	case pages.LogActivityMsg:
-		m.recentActivity = append([]string{fmt.Sprintf("• %s", msg.Message)}, m.recentActivity...)
-		if len(m.recentActivity) > 5 {
-			m.recentActivity = m.recentActivity[:5]
-		}
+		auditengine.GlobalEngine.Append(msg.Message)
 		return m, nil
 	case statsMsg:
 		m.sysStats = stats.SystemStats(msg)
@@ -260,7 +255,7 @@ func (m Model) View() string {
 
 	cpuVal := fmt.Sprintf("%3.0f%%", m.sysStats.CPUPercent)
 	cpuColor := theme.Current.Success
-	if m.sysStats.CPUPercent > 80 { cpuColor = theme.Current.Error } else if m.sysStats.CPUPercent > 50 { cpuColor = theme.Current.Warning }
+	if m.sysStats.CPUPercent > float64(config.CurrentConfig.Monitoring.CPUCritical) { cpuColor = theme.Current.Error } else if m.sysStats.CPUPercent > float64(config.CurrentConfig.Monitoring.CPUWarning) { cpuColor = theme.Current.Warning }
 	cpuTrend, cpuTrendC := getTrend(m.cpuHistory, false)
 	
 	cpuCard := boxStyle.Copy().Width(cardWidth).Render(
@@ -271,7 +266,7 @@ func (m Model) View() string {
 
 	ramVal := fmt.Sprintf("%3.0f%%", m.sysStats.RAMPercent)
 	ramColor := theme.Current.Success
-	if m.sysStats.RAMPercent > 80 { ramColor = theme.Current.Error } else if m.sysStats.RAMPercent > 50 { ramColor = theme.Current.Warning }
+	if m.sysStats.RAMPercent > float64(config.CurrentConfig.Monitoring.CPUCritical) { ramColor = theme.Current.Error } else if m.sysStats.RAMPercent > float64(config.CurrentConfig.Monitoring.CPUWarning) { ramColor = theme.Current.Warning }
 	ramTrend, ramTrendC := getTrend(m.ramHistory, false)
 	
 	ramCard := boxStyle.Copy().Width(cardWidth).Render(
@@ -310,9 +305,10 @@ func (m Model) View() string {
 		if s.Status == "running" || s.Status == "active" { activeServices++ } else if s.Status == "failed" { failedServices++ }
 	}
 	healthScore := 100
-	if m.sysStats.CPUPercent > 90 { healthScore -= 10 }
-	if m.sysStats.RAMPercent > 90 { healthScore -= 10 }
-	if m.sysStats.DiskPercent > 90 { healthScore -= 20 }
+	critF := float64(config.CurrentConfig.Monitoring.CPUCritical)
+	if m.sysStats.CPUPercent > critF { healthScore -= 10 }
+	if m.sysStats.RAMPercent > critF { healthScore -= 10 }
+	if m.sysStats.DiskPercent > critF { healthScore -= 20 }
 	if failedServices > 0 { healthScore -= 10 }
 
 	healthColor := theme.Current.Success
@@ -328,8 +324,9 @@ func (m Model) View() string {
 	
 	healthContent := fmt.Sprintf("%s\n\nHealth Score\n\n%s  %s\n\n", lipgloss.NewStyle().Foreground(healthColor).Render(meterStr), lipgloss.NewStyle().Foreground(healthColor).Bold(true).Render(fmt.Sprintf("%d / 100", healthScore)), dim.Render(healthWord))
 	
-	if m.sysStats.CPUPercent < 80 { healthContent += success.Render("✓") + " CPU healthy\n" } else { healthContent += warning.Render("⚠") + " CPU high load\n" }
-	if m.sysStats.DiskPercent < 80 { healthContent += success.Render("✓") + " Disk healthy\n" } else { healthContent += warning.Render("⚠") + " Disk nearing capacity\n" }
+	warnF := float64(config.CurrentConfig.Monitoring.CPUWarning)
+	if m.sysStats.CPUPercent < warnF { healthContent += success.Render("✓") + " CPU healthy\n" } else { healthContent += warning.Render("⚠") + " CPU high load\n" }
+	if m.sysStats.DiskPercent < warnF { healthContent += success.Render("✓") + " Disk healthy\n" } else { healthContent += warning.Render("⚠") + " Disk nearing capacity\n" }
 	if failedServices == 0 { healthContent += success.Render("✓") + " Services healthy\n" } else { healthContent += errorStyle.Render("⚠") + " Services failing\n" }
 	
 	if len(m.payload.Network.Interfaces) > 0 { 
@@ -403,9 +400,9 @@ func (m Model) View() string {
 		}
 	}
 	if added == 0 {
-		for i, act := range m.recentActivity {
-			ts := time.Now().Add(time.Duration(-i) * time.Minute).Format("15:04")
-			activityContent += dim.Render(ts) + "  " + act + "\n"
+		for _, act := range auditengine.GlobalEngine.GetRecent(5) {
+			ts := act.Timestamp.Format("15:04")
+			activityContent += dim.Render(ts) + "  • " + act.Message + "\n"
 		}
 	}
 	activityCard := boxStyle.Copy().Width(halfWidth).Render(

@@ -35,7 +35,11 @@ func NewGlobe() Globe {
 type TickGlobeMsg time.Time
 
 func TickGlobe() tea.Cmd {
-	return tea.Tick(time.Millisecond*150, func(t time.Time) tea.Msg {
+	interval := time.Millisecond * 150
+	if config.CurrentConfig.Appearance.AnimationIntensity == "Reduced" {
+		interval = time.Millisecond * 500
+	}
+	return tea.Tick(interval, func(t time.Time) tea.Msg {
 		return TickGlobeMsg(t)
 	})
 }
@@ -49,6 +53,10 @@ func (g *Globe) Update(msg tea.Msg) tea.Cmd {
 				g.EnterProgress++
 			} else {
 				g.IsEntering = false
+			}
+			
+			if !g.IsEntering && config.CurrentConfig.Appearance.AnimationIntensity == "Off" {
+				return nil
 			}
 			return TickGlobe()
 		}

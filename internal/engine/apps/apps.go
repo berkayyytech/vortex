@@ -20,24 +20,51 @@ type App struct {
 	PID     string  `json:"pid"`
 	CPU     float64 `json:"cpu"`
 	Mem     float64 `json:"mem"`
+	RAM     string  `json:"ram"`
 	User    string  `json:"user"`
 }
 
 // DetectApps scans the server for common runtimes running on listening ports
 func (e *Engine) DetectApps() ([]App, error) {
-	// A basic detection script that parses active ports and maps them to runtimes
-	// Use top -b -n 2 to get real CPU usage deltas over 0.5s, rather than lifetime averages
+	// Use ps and /proc/stat to compute CPU delta precisely over an interval
 	script := `
-	LC_ALL=C COLUMNS=512 top -c -b -d 0.5 -n 2 | awk '
-	/^top -/ {iter++}
-	iter==2 && $1 ~ /^[0-9]+$/ {
+	cat /proc/[0-9]*/stat 2>/dev/null > /tmp/.v1
+	read -r cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+	total1=$((user + nice + system + idle + iowait + irq + softirq + steal))
+
+	sleep 0.5
+
+	cat /proc/[0-9]*/stat 2>/dev/null > /tmp/.v2
+	read -r cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+	total2=$((user + nice + system + idle + iowait + irq + softirq + steal))
+	td=$((total2 - total1))
+
+	cores=$(nproc 2>/dev/null || echo 1)
+
+	LC_ALL=en_US.UTF-8 ps -eo pid,user,%mem,rss,args --no-headers | awk -v td="$td" -v cores="$cores" '
+	BEGIN {
+		while ((getline < "/tmp/.v1") > 0) p1[$1] = $14 + $15
+		close("/tmp/.v1")
+		while ((getline < "/tmp/.v2") > 0) p2[$1] = $14 + $15
+		close("/tmp/.v2")
+	}
+	{
 		pid = $1
 		user = $2
-		cpu = $9
-		mem = $10
-		cmd = $12
-		for(i=13; i<=NF; i++) cmd = cmd " " $i
+		mem = $3
+		rss = $4
+		cmd = $5
+		for (i=6; i<=NF; i++) cmd = cmd " " $i
 		
+		cpu = 0.0
+		if (pid in p1 && pid in p2 && td > 0) {
+			diff = p2[pid] - p1[pid]
+			cpu = (diff / td) * 100.0 * cores
+		}
+		
+		ram_mb = rss / 1024.0
+		ram_str = sprintf("%.1f MB", ram_mb)
+
 		runtime = "System"
 		if (cmd ~ /node/ || cmd ~ /server\.js/) runtime = "Node.js"
 		else if (cmd ~ /python/) runtime = "Python"
@@ -48,11 +75,10 @@ func (e *Engine) DetectApps() ([]App, error) {
 		else if (cmd ~ /sshd/) runtime = "SSH"
 		else if (cmd ~ /bash/ || cmd ~ /sh/) runtime = "Shell"
 		
-		# JSON escape
 		gsub(/\\/, "\\\\", cmd)
 		gsub(/"/, "\\\"", cmd)
 		
-		printf "{\"name\":\"%s\",\"runtime\":\"%s\",\"pid\":\"%s\",\"cpu\":%s,\"mem\":%s,\"user\":\"%s\"}\n", cmd, runtime, pid, cpu, mem, user
+		printf "{\"name\":\"%s\",\"runtime\":\"%s\",\"pid\":\"%s\",\"cpu\":%s,\"mem\":%s,\"ram\":\"%s\",\"user\":\"%s\"}\n", cmd, runtime, pid, cpu, mem, ram_str, user
 	}
 	' | head -n 100
 	`

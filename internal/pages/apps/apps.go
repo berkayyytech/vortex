@@ -11,6 +11,7 @@ import (
 
 	"main/internal/components"
 	appengine "main/internal/engine/apps"
+	"main/internal/pages"
 	sshlib "main/internal/ssh"
 	"main/internal/theme"
 )
@@ -110,8 +111,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.killConfirm = false
 				if len(m.filteredApps) > 0 && m.engine != nil {
 					return m, func() tea.Msg {
-						m.engine.KillProcess(m.filteredApps[m.cursor].PID)
-						return fetchApps(m.engine)()
+						pid := m.filteredApps[m.cursor].PID
+						m.engine.KillProcess(pid)
+						return tea.Batch(fetchApps(m.engine), func() tea.Msg {
+							return pages.LogActivityMsg{Message: "Force killed process PID " + pid}
+						})()
 					}
 				}
 			default: // any other key cancels
@@ -152,8 +156,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s", "S":
 			if len(m.filteredApps) > 0 && m.engine != nil {
 				return m, func() tea.Msg {
-					m.engine.StopProcess(m.filteredApps[m.cursor].PID)
-					return fetchApps(m.engine)()
+					pid := m.filteredApps[m.cursor].PID
+					m.engine.StopProcess(pid)
+					return tea.Batch(fetchApps(m.engine), func() tea.Msg {
+						return pages.LogActivityMsg{Message: "Stopped process PID " + pid}
+					})()
 				}
 			}
 		case "K": // Shift+K for forced kill
@@ -192,7 +199,7 @@ func (m Model) View() string {
 		items = "No processes match the current filter."
 	} else {
 		header := lipgloss.NewStyle().Foreground(theme.Current.Dim).Bold(true).Render(
-			fmt.Sprintf("  %-8s %-10s %-8s %-8s %-12s %s\n", "PID", "USER", "CPU%", "MEM%", "TYPE", "COMMAND"),
+			fmt.Sprintf("  %-8s %-10s %-8s %-8s %-12s %-12s %s\n", "PID", "USER", "CPU%", "MEM%", "RAM", "TYPE", "COMMAND"),
 		)
 		items += header
 
@@ -226,18 +233,21 @@ func (m Model) View() string {
 			if len(userStr) > 10 { userStr = userStr[:10] }
 			typeStr := "[" + app.Runtime + "]"
 
+			ramStr := app.RAM
+			
 			var row string
 			if m.cursor == i {
 				cursor = "▶ "
 				style = lipgloss.NewStyle().Foreground(lipgloss.Color("232")).Background(theme.Current.Primary).Bold(true)
-				row = fmt.Sprintf("%-8s %-10s %-8.1f %-8.1f %-12s %s", app.PID, userStr, app.CPU, app.Mem, typeStr, cmdStr)
+				row = fmt.Sprintf("%-8s %-10s %-8.1f %-8.1f %-12s %-12s %s", app.PID, userStr, app.CPU, app.Mem, ramStr, typeStr, cmdStr)
 				row = style.Render(row)
 			} else {
-				row = fmt.Sprintf("%-8s %-10s %s %s %-12s %s", 
+				row = fmt.Sprintf("%-8s %-10s %s %s %-12s %-12s %s", 
 					lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(app.PID),
 					lipgloss.NewStyle().Foreground(rowColor).Render(userStr),
 					cpuStr,
 					memStr,
+					lipgloss.NewStyle().Foreground(theme.Current.Dim).Render(ramStr),
 					lipgloss.NewStyle().Foreground(theme.Current.Accent).Render(typeStr),
 					lipgloss.NewStyle().Foreground(theme.Current.Text).Render(cmdStr),
 				)
