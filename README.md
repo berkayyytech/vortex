@@ -52,6 +52,20 @@ cd vortex
 go build -o bin/vps-manager.exe ./cmd/vps-manager
 ```
 
+### Nix
+
+If you have [Nix](https://nixos.org) with flakes enabled, you can run Vortex without cloning:
+
+```bash
+nix run github:berkayyytech/vortex
+```
+
+Or enter a development shell with Go and supporting tools:
+
+```bash
+nix develop
+```
+
 ## How to Test
 
 1. **Run the Application**: Execute the compiled binary:
