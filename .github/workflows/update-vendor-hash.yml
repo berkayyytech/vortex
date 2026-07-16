@@ -1,0 +1,66 @@
+name: Update flake vendorHash
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - go.mod
+      - go.sum
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-vendor-hash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Detect and fix vendorHash drift
+        id: update
+        run: |
+          set -uo pipefail
+          log=$(mktemp)
+
+          if nix build .#default 2>"$log"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! grep -q "hash mismatch" "$log"; then
+            cat "$log" >&2
+            echo "::error::Build failed for a reason other than vendorHash mismatch" >&2
+            exit 1
+          fi
+
+          new_hash=$(grep -oP '(?<=got:\s{4})\S+' "$log")
+          if [ -z "$new_hash" ]; then
+            cat "$log" >&2
+            echo "::error::Could not parse the new vendorHash from build output" >&2
+            exit 1
+          fi
+
+          sed -i "s|vendorHash = \".*\";|vendorHash = \"$new_hash\";|" flake.nix
+
+          set -e
+          nix build .#default
+          nix flake check --all-systems
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: peter-evans/create-pull-request@v8.1.1
+        if: steps.update.outputs.changed == 'true'
+        with:
+          commit-message: "chore: update flake vendorHash"
+          title: "chore: update flake vendorHash"
+          body: |
+            `go.mod`/`go.sum` changed upstream, which invalidated the pinned
+            `vendorHash` in `flake.nix`. This PR updates it to the correct
+            value and has been verified with `nix build` and
+            `nix flake check --all-systems`.
+          branch: update-vendor-hash
+          delete-branch: true
