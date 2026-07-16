@@ -1,0 +1,35 @@
+name: Update flake inputs
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Update flake inputs
+        run: nix flake update
+
+      - name: Verify flake still builds
+        run: nix flake check --all-systems
+
+      - uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          commit-message: "chore: update flake inputs"
+          title: "chore: update flake inputs"
+          body: |
+            Automated weekly update of `flake.lock` (nixpkgs, flake-utils).
+
+            Verified with `nix flake check --all-systems` before opening this PR.
+          branch: update-flake-inputs
+          delete-branch: true
